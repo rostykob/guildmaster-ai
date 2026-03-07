@@ -11,7 +11,8 @@ Guildmaster-AI is a Python agentic framework using a fantasy guild metaphor. It 
 - **uv** for package management
 - **aiosqlite** for metadata storage
 - **chromadb** for vector/embedding storage
-- **httpx** for HTTP (LLM API calls)
+- **httpx** for HTTP (transitive via openrouter SDK)
+- **openrouter** (optional extra) — official OpenRouter Python SDK
 - **pytest + pytest-asyncio** for testing
 - **ruff** for linting, **mypy** for type checking
 
@@ -36,14 +37,22 @@ mypy guildmaster_ai
 
 ```
 guildmaster_ai/
-  core/       — Domain models, no LLM logic. Quest, QuestBoard, Party, Messages, Exceptions.
-  agents/     — All agent implementations. BaseAdventurer is the abstract base.
-  weapons/    — Tool abstractions. BaseWeapon defines the interface.
-  armor/      — Guardrail abstractions. BaseArmor defines pre/post hooks.
-  memory/     — SQLiteStore for metadata, ChromaStore for embeddings.
-  llm/        — BaseLLMProvider ABC, OpenRouterProvider implementation.
-  sdk/        — Guild (runtime) and GuildBuilder (fluent config API).
-  config/     — GuildSettings via pydantic-settings (env vars, .env file).
+  core/           — Domain models, no LLM logic.
+                    Quest, QuestBoard, Party, Messages, Exceptions.
+  adventurers/    — All agent implementations.
+                    BaseAdventurer is the abstract base.
+                    Concrete: GeneralAdventurer, Guildmaster, Receptionist,
+                              Librarian, Guard.
+  weapons/        — Tool abstractions. BaseWeapon defines the interface.
+                    Implementations: FileReadWeapon, WebSearchWeapon.
+  armor/          — Guardrail abstractions. BaseArmor defines pre/post hooks.
+                    Implementations: ContentFilterArmor, RateLimiterArmor.
+  memory/         — SQLiteStore for metadata, ChromaStore for embeddings.
+  llm/            — BaseLLMProvider ABC, OpenRouterProvider implementation
+                    (uses the official openrouter SDK).
+  sdk/            — Guild (runtime) and GuildBuilder (fluent config API).
+  config/         — GuildSettings via pydantic-settings (env vars, .env file).
+  cli/            — CLI layer (planned, not yet implemented).
 ```
 
 ## Conventions
@@ -63,6 +72,7 @@ guildmaster_ai/
 - Use `pytest-asyncio` with `asyncio_mode = "auto"`
 - Mock LLM providers for unit tests — never call real APIs in tests
 - Test fixtures go in `tests/conftest.py`
+- `MockLLMProvider` in `conftest.py` is configurable: set `.response_content` and `.tool_calls_to_return`
 
 ## Quest Status Flow
 
@@ -71,9 +81,19 @@ DRAFT -> POSTED -> ASSIGNED -> IN_PROGRESS -> COMPLETED -> ARCHIVED
                                            -> FAILED -> ARCHIVED
 ```
 
+## LLM Provider
+
+`OpenRouterProvider` (`guildmaster_ai/llm/openrouter.py`) is the only production implementation.
+
+- Requires the `openrouter` optional extra: `pip install 'guildmaster-ai[openrouter]'`
+- Uses the official `openrouter` SDK (`OpenRouter` class, `chat.send_async()`)
+- Supports both non-streaming (`complete()`) and streaming (`stream()`)
+- Can be used as an async context manager
+- Default model: `anthropic/claude-sonnet-4-20250514`
+
 ## Adding New Components
 
-- **New Adventurer**: Subclass `BaseAdventurer`, implement `talents`, `system_prompt`, `execute()`
-- **New Weapon**: Subclass `BaseWeapon`, implement `name`, `description`, `parameters`, `execute()`
-- **New Armor**: Subclass `BaseArmor`, implement `name`, override `pre_process()` and/or `post_process()`
-- **New LLM Provider**: Subclass `BaseLLMProvider`, implement `complete()` and `stream()`
+- **New Adventurer**: Subclass `BaseAdventurer` (in `guildmaster_ai/adventurers/`), implement `talents`, `system_prompt`, `execute()`
+- **New Weapon**: Subclass `BaseWeapon` (in `guildmaster_ai/weapons/`), implement `name`, `description`, `parameters`, `execute()`
+- **New Armor**: Subclass `BaseArmor` (in `guildmaster_ai/armor/`), implement `name`, override `pre_process()` and/or `post_process()`
+- **New LLM Provider**: Subclass `BaseLLMProvider` (in `guildmaster_ai/llm/`), implement `complete()` and `stream()`
