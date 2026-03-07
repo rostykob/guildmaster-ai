@@ -24,8 +24,33 @@ dev = [
 cli = [
     "typer>=0.15.0",
 ]
+# LLM provider extras — install whichever backend(s) you need
 openrouter = [
     "openrouter>=0.1.0",
+]
+anthropic = [
+    "anthropic>=0.40.0",
+]
+openai = [
+    "openai>=1.0.0",
+]
+google = [
+    "google-genai>=1.0.0",
+]
+azure = [
+    # Azure OpenAI reuses the openai package with AsyncAzureOpenAI
+    "openai>=1.0.0",
+]
+bedrock = [
+    "boto3>=1.35.0",
+]
+# Convenience: install all providers at once
+all-providers = [
+    "openrouter>=0.1.0",
+    "anthropic>=0.40.0",
+    "openai>=1.0.0",
+    "google-genai>=1.0.0",
+    "boto3>=1.35.0",
 ]
 
 [build-system]
