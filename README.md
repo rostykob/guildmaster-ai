@@ -43,12 +43,28 @@ DRAFT -> POSTED -> ASSIGNED -> IN_PROGRESS -> COMPLETED -> ARCHIVED
 git clone https://github.com/rostykob/guildmaster-ai.git
 cd guildmaster-ai
 
-# Core dependencies only
-uv sync
+# Core dependencies + a specific LLM provider
+uv sync --extra openrouter        # OpenRouter (default)
+uv sync --extra anthropic         # Anthropic direct
+uv sync --extra openai            # OpenAI
+uv sync --extra google            # Google Gemini
+uv sync --extra azure             # Azure OpenAI
+uv sync --extra bedrock           # AWS Bedrock
 
-# Include the OpenRouter SDK and dev tools
+# All providers + dev tools
 uv sync --all-extras
 ```
+
+### Supported Providers
+
+| Provider string | Class | Package extra | API key env var |
+|---|---|---|---|
+| `openrouter` | `OpenRouterProvider` | `openrouter` | `OPENROUTER_API_KEY` |
+| `anthropic` | `AnthropicProvider` | `anthropic` | `ANTHROPIC_API_KEY` |
+| `openai` | `OpenAIProvider` | `openai` | `OPENAI_API_KEY` |
+| `google` / `gemini` | `GoogleProvider` | `google` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
+| `azure` | `AzureOpenAIProvider` | `azure` | `AZURE_OPENAI_API_KEY` |
+| `bedrock` | `BedrockProvider` | `bedrock` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` |
 
 ### Usage
 
@@ -57,9 +73,10 @@ import asyncio
 from guildmaster_ai import GuildBuilder
 from guildmaster_ai.adventurers.general_adventurer import GeneralAdventurer
 
+# OpenRouter (reads OPENROUTER_API_KEY from env automatically)
 guild = (
     GuildBuilder()
-    .with_llm_provider("openrouter", api_key="sk-or-your-key")
+    .with_llm_provider("openrouter")
     .register_adventurer(GeneralAdventurer)
     .build()
 )
@@ -68,12 +85,33 @@ result = asyncio.run(guild.post_quest("Summarise the key differences between Pyt
 print(result.summary)
 ```
 
+### Switching Providers
+
+```python
+# Anthropic — reads ANTHROPIC_API_KEY from env
+guild = GuildBuilder().with_llm_provider("anthropic").register_adventurer(GeneralAdventurer).build()
+
+# OpenAI — reads OPENAI_API_KEY from env
+guild = GuildBuilder().with_llm_provider("openai", model="gpt-4o").register_adventurer(GeneralAdventurer).build()
+
+# Google Gemini — reads GEMINI_API_KEY or GOOGLE_API_KEY from env
+guild = GuildBuilder().with_llm_provider("google", model="gemini-2.0-flash").register_adventurer(GeneralAdventurer).build()
+
+# Azure OpenAI — reads AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT from env
+guild = GuildBuilder().with_llm_provider("azure", model="gpt-4o").register_adventurer(GeneralAdventurer).build()
+
+# AWS Bedrock — reads AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY + AWS_DEFAULT_REGION from env
+guild = GuildBuilder().with_llm_provider(
+    "bedrock", model="anthropic.claude-3-5-sonnet-20241022-v2:0"
+).register_adventurer(GeneralAdventurer).build()
+```
+
 ### With the Guard enabled
 
 ```python
 guild = (
     GuildBuilder()
-    .with_llm_provider("openrouter", api_key="sk-or-your-key")
+    .with_llm_provider("openrouter")
     .register_adventurer(GeneralAdventurer)
     .with_guard()
     .build()
@@ -94,7 +132,7 @@ adventurer.equip_weapon(WebSearchWeapon())
 
 guild = (
     GuildBuilder()
-    .with_llm_provider("openrouter", api_key="sk-or-your-key")
+    .with_llm_provider("openrouter")
     .register_adventurer(adventurer)
     .build()
 )
@@ -102,14 +140,29 @@ guild = (
 
 ### Configuration
 
-Set environment variables (prefix `GUILD_`) or use a `.env` file:
+Provider API keys are read from their **official env var names** — no renaming needed if you already have them set.  Framework settings use the `GUILD_` prefix.
 
 ```bash
-GUILD_LLM_API_KEY=sk-or-your-openrouter-key
+# --- Provider credentials (official names) ---
+OPENROUTER_API_KEY=sk-or-...
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+GEMINI_API_KEY=AIza...            # or GOOGLE_API_KEY
+AZURE_OPENAI_API_KEY=...
+AZURE_OPENAI_ENDPOINT=https://my-resource.openai.azure.com/
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+AWS_DEFAULT_REGION=us-east-1
+
+# --- Framework settings (GUILD_ prefix) ---
+GUILD_LLM_PROVIDER=openrouter
 GUILD_LLM_DEFAULT_MODEL=anthropic/claude-sonnet-4-20250514
 GUILD_LLM_TEMPERATURE=0.7
+GUILD_LLM_MAX_TOKENS=4096
 GUILD_MAX_QUEST_RETRIES=3
 GUILD_MAX_CLARIFICATION_ROUNDS=3
+# Azure only
+GUILD_AZURE_OPENAI_API_VERSION=2024-08-01-preview
 ```
 
 ## Project Structure
@@ -137,7 +190,12 @@ guildmaster_ai/
     chroma_store.py           # ChromaDB — vector embeddings for retrieval
   llm/            # LLM provider abstraction
     base_provider.py          # BaseLLMProvider ABC, LLMMessage, LLMResponse
-    openrouter.py             # OpenRouterProvider using the official openrouter SDK
+    openrouter.py             # OpenRouterProvider  (extra: openrouter)
+    anthropic.py              # AnthropicProvider   (extra: anthropic)
+    openai.py                 # OpenAIProvider      (extra: openai)
+    google.py                 # GoogleProvider      (extra: google)
+    azure.py                  # AzureOpenAIProvider (extra: azure)
+    bedrock.py                # BedrockProvider     (extra: bedrock)
   sdk/            # SDK entry points
     guild.py                  # Guild runtime — full quest lifecycle orchestration
     builder.py                # GuildBuilder — fluent configuration API
@@ -155,7 +213,7 @@ Higher-ranked quests require more capable adventurers and may need a full party.
 ## Development
 
 ```bash
-# Install all extras (includes openrouter SDK + dev tools)
+# Install all extras (all providers + dev tools)
 uv sync --all-extras
 
 # Run tests
