@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from abc import ABC, abstractmethod
 from typing import Any
 from uuid import uuid4
@@ -18,6 +19,8 @@ from guildmaster_ai.llm.types import (
     ToolMessage,
 )
 from guildmaster_ai.weapons.base_weapon import BaseWeapon
+
+logger = logging.getLogger("guildmaster.adventurer")
 
 
 class BaseAdventurer(ABC):
@@ -81,6 +84,8 @@ class BaseAdventurer(ABC):
             id=self.id,
             name=self.name,
             talents=self.talents,
+            weapons=list(self._weapons.keys()),
+            armor=[a.name for a in self._armor],
         )
 
     # ── Conversation helpers ──────────────────────────────────────────
@@ -129,6 +134,7 @@ class BaseAdventurer(ABC):
             raise RuntimeError("No LLM configured for this adventurer.")
 
         conv = messages if messages is not None else self._conversation
+        logger.debug("%s calling LLM with %d messages", self.name or self.id, len(conv))
 
         # Armor pre-processing on the last user message
         for armor in self._armor:
@@ -149,6 +155,12 @@ class BaseAdventurer(ABC):
 
         ai_msg: AIMessage = await llm.ainvoke(conv)
         guild_resp = GuildResponse.from_ai_message(ai_msg)
+        logger.debug(
+            "%s LLM response: %d chars, %d tool calls",
+            self.name or self.id,
+            len(guild_resp.content),
+            len(guild_resp.tool_calls),
+        )
 
         # Armor post-processing on response content
         for armor in self._armor:
@@ -170,7 +182,10 @@ class BaseAdventurer(ABC):
 
         weapon = self._weapons.get(name)
         if weapon is None:
+            logger.warning("Unknown weapon requested: %s", name)
             return json.dumps({"error": f"Unknown weapon: {name}"})
 
+        logger.info("%s using weapon %r with args %s", self.name or self.id, name, arguments)
         result = await weapon.execute(**arguments)
+        logger.debug("Weapon %r result: %s", name, str(result)[:200])
         return json.dumps(result)

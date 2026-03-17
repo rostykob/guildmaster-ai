@@ -50,13 +50,16 @@ class TestGuildmaster:
         adv = GeneralAdventurer(llm=mock_llm)
         gm.register_adventurer(adv)
 
+        # A "general" adventurer can attempt any quest, so an empty roster
+        # is needed to get infeasibility.
+        gm_empty = Guildmaster(llm=mock_llm)
         draft = QuestDraft(
             title="Test",
             description="A test",
             required_talents=["quantum_computing"],
             acceptance_criteria=["Done"],
         )
-        report = gm.check_feasibility(draft)
+        report = gm_empty.check_feasibility(draft)
         assert report.feasible is False
         assert "quantum_computing" in report.missing_talents
 

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from guildmaster_ai.core.messages import QuestObservation, QuestResult
 from guildmaster_ai.core.quest import Quest
 from guildmaster_ai.llm.types import GuildLLM, guild_complete
+
+logger = logging.getLogger("guildmaster.librarian")
 
 
 class Librarian:
@@ -24,8 +27,10 @@ class Librarian:
         self, quest: Quest, result: QuestResult
     ) -> dict[str, Any]:
         """Produce a summary dict and generate observations from the quest."""
+        logger.info("Archiving quest %s: %r", quest.id[:8], quest.title)
         observation = await self.analyze_quest(quest, result)
         self._observations.append(observation)
+        logger.debug("Observation tags: %s", observation.tags)
 
         return {
             "quest_id": quest.id,
@@ -41,7 +46,9 @@ class Librarian:
     ) -> QuestObservation:
         """Analyze a quest's history and result to produce a tagged observation."""
         if self._llm is not None:
+            logger.debug("Analyzing quest via LLM")
             return await self._llm_analyze(quest, result)
+        logger.debug("Analyzing quest via rule-based heuristics")
         return self._rule_based_analyze(quest, result)
 
     async def analyze_batch(

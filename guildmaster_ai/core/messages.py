@@ -51,6 +51,8 @@ class AdventurerProfile(BaseModel):
     id: str
     name: str
     talents: list[str] = Field(default_factory=list)
+    weapons: list[str] = Field(default_factory=list)
+    armor: list[str] = Field(default_factory=list)
     available: bool = True
 
 
@@ -82,9 +84,19 @@ class QuestObservation(BaseMessage):
     lessons_learned: list[str] = Field(default_factory=list)
 
 
+class GuardMetrics(BaseModel):
+    """Quantitative evaluation metrics produced by a guard."""
+
+    hallucination: float = Field(default=0.0, ge=0.0, le=1.0)
+    accuracy: float = Field(default=1.0, ge=0.0, le=1.0)
+    relevance: float = Field(default=1.0, ge=0.0, le=1.0)
+    toxicity: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class GuardVerdict(BaseMessage):
     """Safety / policy verdict from the guard agent."""
 
     verdict: Literal["pass", "warn", "block"]
     reason: str
+    metrics: GuardMetrics = Field(default_factory=GuardMetrics)
     details: dict[str, Any] = Field(default_factory=dict)

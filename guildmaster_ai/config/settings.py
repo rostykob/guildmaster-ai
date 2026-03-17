@@ -22,7 +22,7 @@ class GuildSettings(BaseSettings):
 
     # ── Provider selection ────────────────────────────────────────────────
     llm_provider: str = "openrouter"
-    llm_default_model: str = "anthropic/claude-sonnet-4-20250514"
+    llm_default_model: str = "anthropic/claude-sonnet-4"
     llm_base_url: str = ""  # empty → each provider uses its own default
     llm_max_tokens: int = 4096
     llm_temperature: float = 0.7

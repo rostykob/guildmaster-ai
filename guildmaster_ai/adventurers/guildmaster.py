@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 
 from guildmaster_ai.adventurers.base_adventurer import BaseAdventurer
@@ -15,6 +16,8 @@ from guildmaster_ai.core.quest_board import QuestBoard
 from guildmaster_ai.llm.types import GuildLLM
 
 # Keyword-to-talent mapping used for prompt-based talent inference.
+logger = logging.getLogger("guildmaster.guildmaster")
+
 _TALENT_KEYWORDS: dict[str, list[str]] = {
     "general": ["general", "versatile", "broad", "wide range"],
     "reasoning": ["reason", "analyz", "logic", "think", "deduc"],
@@ -46,6 +49,10 @@ class Guildmaster:
         talents = self._assess_talents(adventurer)
         adventurer.grant_talents(talents)
         self._roster[adventurer.id] = adventurer
+        logger.info(
+            "Registered adventurer %r with talents %s",
+            adventurer.name or adventurer.id, talents,
+        )
 
     def unregister_adventurer(self, adventurer_id: str) -> None:
         """Remove an adventurer from the guild roster."""
@@ -70,10 +77,15 @@ class Guildmaster:
 
         # Derive talents from equipped weapons
         for weapon_name in adventurer._weapons:
-            # Normalise weapon name into a talent (e.g. "web_search" stays "web_search")
             weapon_talent = weapon_name.lower().replace(" ", "_")
             if weapon_talent not in talents:
                 talents.append(weapon_talent)
+
+        # Derive talents from worn armor
+        for armor in adventurer._armor:
+            armor_talent = armor.name.lower().replace(" ", "_")
+            if armor_talent not in talents:
+                talents.append(armor_talent)
 
         # Every adventurer gets at least "general"
         if not talents:
@@ -83,21 +95,35 @@ class Guildmaster:
 
     def check_feasibility(self, draft: QuestDraft) -> QuestFeasibilityReport:
         """Check whether the guild can staff a quest draft."""
+        logger.info(
+            "Checking feasibility for %r (requires: %s)", draft.title, draft.required_talents,
+        )
         all_talents: set[str] = set()
         matched: list[AdventurerProfile] = []
 
         for adv in self._roster.values():
             adv_talents = set(adv.talents)
             all_talents.update(adv_talents)
-            if set(draft.required_talents) & adv_talents:
+            # "general" talent acts as a wildcard — the adventurer can attempt any quest
+            if "general" in adv_talents or set(draft.required_talents) & adv_talents:
                 matched.append(adv.profile())
 
         # If no specific talents required, all adventurers are potential matches
         if not draft.required_talents:
             matched = [adv.profile() for adv in self._roster.values()]
 
-        missing = [t for t in draft.required_talents if t not in all_talents]
+        # Only report truly missing talents if no general-purpose adventurer is available
+        has_general = any("general" in set(a.talents) for a in self._roster.values())
+        missing = (
+            []
+            if has_general
+            else [t for t in draft.required_talents if t not in all_talents]
+        )
         feasible = len(missing) == 0 and len(matched) > 0
+        logger.info(
+            "Feasibility: feasible=%s matched=%d missing=%s",
+            feasible, len(matched), missing,
+        )
 
         return QuestFeasibilityReport(
             sender="guildmaster",
@@ -113,7 +139,9 @@ class Guildmaster:
         eligible: list[BaseAdventurer] = []
 
         for adv in self._roster.values():
-            if required and not (required & set(adv.talents)):
+            adv_talents = set(adv.talents)
+            # "general" talent acts as a wildcard — can attempt any quest
+            if required and "general" not in adv_talents and not (required & adv_talents):
                 continue
             eligible.append(adv)
 
@@ -121,8 +149,10 @@ class Guildmaster:
 
     async def assign_quest(self, quest: Quest, board: QuestBoard) -> Party | None:
         """Match adventurers, form a party, and assign the quest on the board."""
+        logger.info("Assigning quest %s: %r", quest.id[:8], quest.title)
         matched = self.match_adventurers(quest)
         if not matched:
+            logger.warning("No adventurers matched quest %s", quest.id[:8])
             return None
 
         leader = matched[0]

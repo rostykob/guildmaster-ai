@@ -13,6 +13,7 @@ dependencies = [
     "langchain>=1.0",
     "langchain-core>=1.0",
     "langchain-openai>=1.0",
+    "python-dotenv>=1.2.2",
 ]
 
 [project.optional-dependencies]
@@ -77,3 +78,9 @@ testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["guildmaster_ai"]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.2.0",
+    "jupyter>=1.1.1",
+]

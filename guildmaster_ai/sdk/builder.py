@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from guildmaster_ai.adventurers.base_adventurer import BaseAdventurer
+from guildmaster_ai.adventurers.base_guard import BaseGuard
 from guildmaster_ai.config.settings import GuildSettings
 from guildmaster_ai.llm.base_provider import create_chat_model
 from guildmaster_ai.llm.types import GuildLLM
@@ -34,7 +35,7 @@ class GuildBuilder:
         self._llm: GuildLLM | None = None
         self._adventurers: list[tuple[type[BaseAdventurer] | BaseAdventurer, int]] = []
         self._settings = GuildSettings()
-        self._enable_guard: bool = False
+        self._guard: BaseGuard | bool = False
 
     def _resolve_api_key(self, provider: str, api_key: str | None) -> str:
         """Return the API key for *provider*, falling back to settings."""
@@ -119,9 +120,13 @@ class GuildBuilder:
         self._adventurers.append((adventurer, count))
         return self
 
-    def with_guard(self) -> GuildBuilder:
-        """Enable the guard agent for safety verification."""
-        self._enable_guard = True
+    def with_guard(self, guard: BaseGuard | None = None) -> GuildBuilder:
+        """Enable the guard agent for safety verification.
+
+        Pass a custom :class:`BaseGuard` instance, or omit to use the
+        built-in LLM-as-judge guard.
+        """
+        self._guard = guard if guard is not None else True
         return self
 
     def with_settings(self, **kwargs: object) -> GuildBuilder:
@@ -146,7 +151,8 @@ class GuildBuilder:
                     adv = adventurer_or_cls
                 guild.register_adventurer(adv)
 
-        if self._enable_guard:
-            guild.enable_guard()
+        if self._guard:
+            custom = self._guard if isinstance(self._guard, BaseGuard) else None
+            guild.enable_guard(custom)
 
         return guild

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from guildmaster_ai.adventurers.base_adventurer import BaseAdventurer
 from guildmaster_ai.core.messages import QuestResult
 from guildmaster_ai.core.quest import Quest
+
+logger = logging.getLogger("guildmaster.adventurer.general")
 
 _MAX_TOOL_ITERATIONS = 10
 
@@ -20,14 +24,17 @@ class GeneralAdventurer(BaseAdventurer):
 
     async def execute(self, quest: Quest) -> QuestResult:
         """Execute a quest using an LLM call loop with tool handling."""
+        logger.info("Starting quest %s: %r", quest.id[:8], quest.title)
         self._reset_conversation()
         self._add_user_message(quest.description)
 
-        for _ in range(_MAX_TOOL_ITERATIONS):
+        for iteration in range(_MAX_TOOL_ITERATIONS):
+            logger.debug("Iteration %d/%d", iteration + 1, _MAX_TOOL_ITERATIONS)
             response = await self._call_llm()
 
             # No tool calls — we have a final answer
             if not response.has_tool_calls:
+                logger.info("Quest %s completed in %d iteration(s)", quest.id[:8], iteration + 1)
                 return QuestResult(
                     sender=self.name or self.id,
                     quest_id=quest.id,
@@ -48,6 +55,7 @@ class GeneralAdventurer(BaseAdventurer):
                 )
 
         # Exhausted iterations — return what we have
+        logger.warning("Quest %s exceeded max iterations (%d)", quest.id[:8], _MAX_TOOL_ITERATIONS)
         return QuestResult(
             sender=self.name or self.id,
             quest_id=quest.id,

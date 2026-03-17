@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Awaitable, Callable
 
 from guildmaster_ai.core.messages import QuestDraft, QuestResult
 from guildmaster_ai.llm.types import GuildLLM, guild_complete
+
+logger = logging.getLogger("guildmaster.receptionist")
 
 # Type alias for a callback that presents questions to a user and returns answers.
 ClarificationCallback = Callable[[list[str]], Awaitable[dict[str, str]]]
@@ -34,23 +37,35 @@ class Receptionist:
         When *clarify* is supplied and the draft looks incomplete, up to
         *max_rounds* clarification rounds are performed before returning.
         """
+        logger.info("Intake started for request: %s", user_request[:100])
         draft = self._build_initial_draft(user_request)
 
         if self._llm is None:
+            logger.debug("No LLM configured — returning raw draft")
             return draft
 
         # LLM-assisted refinement
+        logger.info("Refining quest draft via LLM")
         draft = await self._refine_draft(user_request)
+        logger.debug(
+            "Refined draft: title=%r talents=%s criteria=%d",
+            draft.title,
+            draft.required_talents,
+            len(draft.acceptance_criteria),
+        )
 
         # Clarification loop
         if clarify is not None:
-            for _ in range(self._max_rounds):
+            for round_num in range(self._max_rounds):
                 questions = self._identify_gaps(draft)
                 if not questions:
+                    logger.debug("No gaps found — skipping clarification")
                     break
+                logger.info("Clarification round %d: %d questions", round_num + 1, len(questions))
                 answers = await clarify(questions)
                 draft = self._apply_clarifications(draft, answers)
 
+        logger.info("Intake complete: %r", draft.title)
         return draft
 
     async def present_result(self, result: QuestResult) -> str:
