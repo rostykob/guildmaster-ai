@@ -9,7 +9,7 @@ from guildmaster_ai.config.settings import GuildSettings
 from guildmaster_ai.core.messages import QuestResult
 from guildmaster_ai.core.quest import Quest, QuestStatus
 from guildmaster_ai.core.quest_board import QuestBoard
-from guildmaster_ai.llm.base_provider import BaseLLMProvider
+from guildmaster_ai.llm.types import GuildLLM
 
 
 class Guild:
@@ -17,18 +17,18 @@ class Guild:
 
     def __init__(
         self,
-        llm_provider: BaseLLMProvider,
+        llm: GuildLLM,
         settings: GuildSettings | None = None,
     ) -> None:
         self.settings = settings or GuildSettings()
-        self._llm = llm_provider
+        self._llm = llm
         self._board = QuestBoard()
-        self._guildmaster = Guildmaster(llm_provider=llm_provider)
+        self._guildmaster = Guildmaster(llm=llm)
         self._receptionist = Receptionist(
-            llm_provider=llm_provider,
+            llm=llm,
             max_rounds=self.settings.max_clarification_rounds,
         )
-        self._librarian = Librarian(llm_provider=llm_provider)
+        self._librarian = Librarian(llm=llm)
         self._guard: Guard | None = None
 
     def register_adventurer(self, adventurer: BaseAdventurer) -> None:
@@ -39,7 +39,7 @@ class Guild:
 
     def enable_guard(self) -> None:
         """Activate the guard agent for safety verification."""
-        self._guard = Guard(llm_provider=self._llm)
+        self._guard = Guard(llm=self._llm)
 
     async def post_quest(self, request: str) -> QuestResult:
         """Full 4-phase quest lifecycle."""

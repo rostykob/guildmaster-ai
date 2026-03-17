@@ -11,7 +11,7 @@ Guildmaster-AI is a Python agentic framework using a fantasy guild metaphor. It 
 - **uv** for package management
 - **aiosqlite** for metadata storage
 - **chromadb** for vector/embedding storage
-- **httpx** for HTTP (LLM API calls)
+- **LangChain 1.x** (`langchain`, `langchain-core`, `langchain-openai`) for LLM connections and tool calling
 - **pytest + pytest-asyncio** for testing
 - **ruff** for linting, **mypy** for type checking
 
@@ -37,11 +37,11 @@ mypy guildmaster_ai
 ```
 guildmaster_ai/
   core/       — Domain models, no LLM logic. Quest, QuestBoard, Party, Messages, Exceptions.
-  agents/     — All agent implementations. BaseAdventurer is the abstract base.
-  weapons/    — Tool abstractions. BaseWeapon defines the interface.
+  adventurers/ — All agent implementations. BaseAdventurer is the abstract base.
+  weapons/    — Tool abstractions. BaseWeapon extends LangChain BaseTool.
   armor/      — Guardrail abstractions. BaseArmor defines pre/post hooks.
   memory/     — SQLiteStore for metadata, ChromaStore for embeddings.
-  llm/        — BaseLLMProvider ABC, OpenRouterProvider implementation.
+  llm/        — LangChain chat model factory, ChatOpenRouter wrapper.
   sdk/        — Guild (runtime) and GuildBuilder (fluent config API).
   config/     — GuildSettings via pydantic-settings (env vars, .env file).
 ```
@@ -74,6 +74,6 @@ DRAFT -> POSTED -> ASSIGNED -> IN_PROGRESS -> COMPLETED -> ARCHIVED
 ## Adding New Components
 
 - **New Adventurer**: Subclass `BaseAdventurer`, implement `talents`, `system_prompt`, `execute()`
-- **New Weapon**: Subclass `BaseWeapon`, implement `name`, `description`, `parameters`, `execute()`
+- **New Weapon**: Subclass `BaseWeapon` (extends LangChain `BaseTool`), set `name`, `description`, `args_schema`, implement `execute()`
 - **New Armor**: Subclass `BaseArmor`, implement `name`, override `pre_process()` and/or `post_process()`
-- **New LLM Provider**: Subclass `BaseLLMProvider`, implement `complete()` and `stream()`
+- **New LLM Provider**: Pass any LangChain `BaseChatModel` to `GuildBuilder.with_llm_provider()`, or add a new provider to `create_chat_model()` factory

@@ -43,8 +43,8 @@ uv sync --all-extras
 
 ```python
 import asyncio
-from guildmaster_ai import GuildBuilder
-from guildmaster_ai.agents.adventurers.general_adventurer import GeneralAdventurer
+from guildmaster_ai.sdk.builder import GuildBuilder
+from guildmaster_ai.adventurers.general_adventurer import GeneralAdventurer
 
 guild = (
     GuildBuilder()
@@ -89,11 +89,11 @@ mypy guildmaster_ai
 ```
 guildmaster_ai/
   core/           # Domain models (Quest, QuestBoard, Party, Messages)
-  agents/         # Agent implementations (Guildmaster, Receptionist, Adventurers)
+  adventurers/    # Agent implementations (Guildmaster, Receptionist, Adventurers)
   weapons/        # Tool abstractions and implementations
   armor/          # Guardrail abstractions and implementations
   memory/         # Storage backends (SQLite, ChromaDB)
-  llm/            # LLM provider abstractions (OpenRouter)
+  llm/            # LangChain chat model factory and OpenRouter wrapper
   sdk/            # SDK entry points (Guild, GuildBuilder)
   config/         # Settings management
   cli/            # CLI layer (Phase 2)

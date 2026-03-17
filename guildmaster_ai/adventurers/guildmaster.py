@@ -12,7 +12,7 @@ from guildmaster_ai.core.messages import (
 from guildmaster_ai.core.party import Party, PartyMember
 from guildmaster_ai.core.quest import Quest, QuestRank
 from guildmaster_ai.core.quest_board import QuestBoard
-from guildmaster_ai.llm.base_provider import BaseLLMProvider
+from guildmaster_ai.llm.types import GuildLLM
 
 # Keyword-to-talent mapping used for prompt-based talent inference.
 _TALENT_KEYWORDS: dict[str, list[str]] = {
@@ -34,11 +34,11 @@ class Guildmaster:
 
     def __init__(
         self,
-        llm_provider: BaseLLMProvider | None = None,
+        llm: GuildLLM | None = None,
         model: str | None = None,
     ) -> None:
         self._roster: dict[str, BaseAdventurer] = {}
-        self._llm = llm_provider
+        self._llm = llm
         self._model = model
 
     def register_adventurer(self, adventurer: BaseAdventurer) -> None:

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 
 from guildmaster_ai.core.messages import QuestDraft, QuestResult
-from guildmaster_ai.llm.base_provider import BaseLLMProvider, LLMMessage, LLMResponse
+from guildmaster_ai.llm.types import GuildLLM, guild_complete
 
 # Type alias for a callback that presents questions to a user and returns answers.
 ClarificationCallback = Callable[[list[str]], Awaitable[dict[str, str]]]
@@ -14,11 +15,11 @@ class Receptionist:
 
     def __init__(
         self,
-        llm_provider: BaseLLMProvider | None = None,
+        llm: GuildLLM | None = None,
         model: str | None = None,
         max_rounds: int = 3,
     ) -> None:
-        self._llm = llm_provider
+        self._llm = llm
         self._model = model
         self._max_rounds = max_rounds
 
@@ -29,7 +30,7 @@ class Receptionist:
     ) -> QuestDraft:
         """Create a QuestDraft from a user request.
 
-        If an LLM provider is configured the request is refined via the LLM.
+        If an LLM is configured the request is refined via the LLM.
         When *clarify* is supplied and the draft looks incomplete, up to
         *max_rounds* clarification rounds are performed before returning.
         """
@@ -78,31 +79,25 @@ class Receptionist:
         if self._llm is None:
             return self._build_initial_draft(user_request)
 
-        messages = [
-            LLMMessage(
-                role="system",
-                content=(
-                    "You are a guild receptionist. Extract a structured quest from "
-                    "the user's request. Respond with ONLY a JSON object containing: "
-                    '"title", "description", "required_talents" (list of strings), '
-                    '"acceptance_criteria" (list of strings). '
-                    "Keep the title concise (max 80 chars)."
-                ),
+        content = await guild_complete(
+            self._llm,
+            system=(
+                "You are a guild receptionist. Extract a structured quest from "
+                "the user's request. Respond with ONLY a JSON object containing: "
+                '"title", "description", "required_talents" (list of strings), '
+                '"acceptance_criteria" (list of strings). '
+                "Keep the title concise (max 80 chars)."
             ),
-            LLMMessage(role="user", content=user_request),
-        ]
-
-        response = await self._llm.complete(messages, model=self._model)
-        return self._parse_draft_response(response, user_request)
+            user=user_request,
+        )
+        return self._parse_draft_response(content, user_request)
 
     @staticmethod
-    def _parse_draft_response(response: LLMResponse, fallback_text: str) -> QuestDraft:
+    def _parse_draft_response(response_content: str, fallback_text: str) -> QuestDraft:
         """Try to parse LLM JSON into a QuestDraft, falling back gracefully."""
-        import json
-
         try:
             # Strip markdown fences if present
-            text = response.content.strip()
+            text = response_content.strip()
             if text.startswith("```"):
                 text = text.split("\n", 1)[1].rsplit("```", 1)[0]
             data = json.loads(text)

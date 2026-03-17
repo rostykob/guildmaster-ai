@@ -6,7 +6,7 @@ import pytest
 
 from guildmaster_ai.adventurers.receptionist import Receptionist
 
-from .conftest import MockLLMProvider
+from .conftest import MockChatModel
 
 
 class TestReceptionist:
@@ -19,11 +19,11 @@ class TestReceptionist:
 
     @pytest.mark.asyncio
     async def test_intake_with_llm(self) -> None:
-        llm = MockLLMProvider(
+        llm = MockChatModel(
             response_content='{"title": "Web Scraper", "description": "Build a scraper", '
             '"required_talents": ["coding"], "acceptance_criteria": ["Works"]}'
         )
-        r = Receptionist(llm_provider=llm)
+        r = Receptionist(llm=llm)
         draft = await r.intake("Build a web scraper")
         assert draft.title == "Web Scraper"
         assert "coding" in draft.required_talents

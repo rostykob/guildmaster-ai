@@ -4,29 +4,23 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from guildmaster_ai.weapons.base_weapon import BaseWeapon
+
+
+class FileReadInput(BaseModel):
+    """Input schema for the file read weapon."""
+
+    path: str = Field(description="Path to the file to read")
 
 
 class FileReadWeapon(BaseWeapon):
     """Weapon that reads a file from the filesystem."""
 
-    @property
-    def name(self) -> str:
-        return "file_read"
-
-    @property
-    def description(self) -> str:
-        return "Read a file from the filesystem"
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Path to the file to read"},
-            },
-            "required": ["path"],
-        }
+    name: str = "file_read"
+    description: str = "Read a file from the filesystem"
+    args_schema: type[BaseModel] = FileReadInput  # type: ignore[assignment]
 
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         path_str: str = kwargs["path"]

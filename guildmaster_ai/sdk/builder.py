@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from guildmaster_ai.adventurers.base_adventurer import BaseAdventurer
 from guildmaster_ai.config.settings import GuildSettings
-from guildmaster_ai.llm.base_provider import BaseLLMProvider
-from guildmaster_ai.llm.openrouter import OpenRouterProvider
+from guildmaster_ai.llm.base_provider import create_chat_model
+from guildmaster_ai.llm.types import GuildLLM
 from guildmaster_ai.sdk.guild import Guild
 
 
@@ -11,29 +11,40 @@ class GuildBuilder:
     """Fluent builder for constructing a Guild instance."""
 
     def __init__(self) -> None:
-        self._provider: BaseLLMProvider | None = None
+        self._llm: GuildLLM | None = None
         self._adventurers: list[tuple[type[BaseAdventurer] | BaseAdventurer, int]] = []
         self._settings = GuildSettings()
         self._enable_guard: bool = False
 
     def with_llm_provider(
         self,
-        provider: str | BaseLLMProvider = "openrouter",
+        provider: str | GuildLLM = "openrouter",
         api_key: str | None = None,
         model: str | None = None,
         base_url: str | None = None,
     ) -> GuildBuilder:
-        """Configure the LLM provider."""
-        if isinstance(provider, BaseLLMProvider):
-            self._provider = provider
-        elif provider == "openrouter":
-            self._provider = OpenRouterProvider(
+        """Configure the LLM provider.
+
+        Pass a pre-configured ``GuildLLM`` instance directly, or a
+        provider name (``"openrouter"`` or ``"openai"``) to create one from
+        settings.
+        """
+        if isinstance(provider, GuildLLM):
+            self._llm = provider
+        elif isinstance(provider, str):
+            kwargs = {}
+            if base_url is not None:
+                kwargs["base_url"] = base_url
+            self._llm = create_chat_model(
+                provider,
                 api_key=api_key or self._settings.llm_api_key,
-                base_url=base_url or self._settings.llm_base_url,
-                default_model=model or self._settings.llm_default_model,
+                model=model or self._settings.llm_default_model,
+                temperature=self._settings.llm_temperature,
+                max_tokens=self._settings.llm_max_tokens,
+                **kwargs,
             )
         else:
-            raise ValueError(f"Unknown provider: {provider}")
+            raise TypeError(f"Expected str or GuildLLM, got {type(provider)}")
         return self
 
     def register_adventurer(
@@ -59,10 +70,10 @@ class GuildBuilder:
 
     def build(self) -> Guild:
         """Build and return the configured Guild instance."""
-        if self._provider is None:
+        if self._llm is None:
             raise ValueError("LLM provider is required. Call with_llm_provider() first.")
 
-        guild = Guild(llm_provider=self._provider, settings=self._settings)
+        guild = Guild(llm=self._llm, settings=self._settings)
 
         for adventurer_or_cls, count in self._adventurers:
             for _i in range(count):

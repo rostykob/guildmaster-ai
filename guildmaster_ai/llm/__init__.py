@@ -1,11 +1,17 @@
-"""LLM provider abstractions and implementations."""
+"""LLM provider abstractions built on LangChain.
 
-from guildmaster_ai.llm.base_provider import BaseLLMProvider, LLMMessage, LLMResponse
-from guildmaster_ai.llm.openrouter import OpenRouterProvider
+Users should import from this package — never from ``langchain_core``
+directly.
+"""
+
+from guildmaster_ai.llm.base_provider import create_chat_model
+from guildmaster_ai.llm.openrouter import ChatOpenRouter
+from guildmaster_ai.llm.types import GuildLLM, GuildResponse, guild_complete
 
 __all__ = [
-    "BaseLLMProvider",
-    "LLMMessage",
-    "LLMResponse",
-    "OpenRouterProvider",
+    "ChatOpenRouter",
+    "GuildLLM",
+    "GuildResponse",
+    "create_chat_model",
+    "guild_complete",
 ]

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from guildmaster_ai.core.messages import QuestObservation, QuestResult
 from guildmaster_ai.core.quest import Quest
-from guildmaster_ai.llm.base_provider import BaseLLMProvider, LLMMessage, LLMResponse
+from guildmaster_ai.llm.types import GuildLLM, guild_complete
 
 
 class Librarian:
@@ -12,10 +13,10 @@ class Librarian:
 
     def __init__(
         self,
-        llm_provider: BaseLLMProvider | None = None,
+        llm: GuildLLM | None = None,
         model: str | None = None,
     ) -> None:
-        self._llm = llm_provider
+        self._llm = llm
         self._model = model
         self._observations: list[QuestObservation] = []
 
@@ -130,43 +131,34 @@ class Librarian:
             for h in quest.history
         )
 
-        messages = [
-            LLMMessage(
-                role="system",
-                content=(
-                    "You are a guild librarian. Analyze the quest history and result, "
-                    "then respond with ONLY a JSON object containing: "
-                    '"summary" (string), "tags" (list of strings), '
-                    '"lessons_learned" (list of strings). '
-                    "Tags should categorize the quest outcome, skills used, and patterns."
-                ),
+        content = await guild_complete(
+            self._llm,
+            system=(
+                "You are a guild librarian. Analyze the quest history and result, "
+                "then respond with ONLY a JSON object containing: "
+                '"summary" (string), "tags" (list of strings), '
+                '"lessons_learned" (list of strings). '
+                "Tags should categorize the quest outcome, skills used, and patterns."
             ),
-            LLMMessage(
-                role="user",
-                content=(
-                    f"Quest: {quest.title}\n"
-                    f"Description: {quest.description}\n"
-                    f"Required talents: {quest.required_talents}\n"
-                    f"Status: {quest.status.value}\n"
-                    f"Success: {result.success}\n"
-                    f"Result summary: {result.summary}\n"
-                    f"Failure reason: {result.failure_reason or 'N/A'}\n\n"
-                    f"History:\n{history_text}"
-                ),
+            user=(
+                f"Quest: {quest.title}\n"
+                f"Description: {quest.description}\n"
+                f"Required talents: {quest.required_talents}\n"
+                f"Status: {quest.status.value}\n"
+                f"Success: {result.success}\n"
+                f"Result summary: {result.summary}\n"
+                f"Failure reason: {result.failure_reason or 'N/A'}\n\n"
+                f"History:\n{history_text}"
             ),
-        ]
-
-        response = await self._llm.complete(messages, model=self._model)
-        return self._parse_observation_response(response, quest, result)
+        )
+        return self._parse_observation_response(content, quest, result)
 
     def _parse_observation_response(
-        self, response: LLMResponse, quest: Quest, result: QuestResult
+        self, response_content: str, quest: Quest, result: QuestResult
     ) -> QuestObservation:
         """Parse the LLM response into a QuestObservation, falling back to rules."""
-        import json
-
         try:
-            text = response.content.strip()
+            text = response_content.strip()
             if text.startswith("```"):
                 text = text.split("\n", 1)[1].rsplit("```", 1)[0]
             data = json.loads(text)

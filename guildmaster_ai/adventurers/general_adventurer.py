@@ -3,7 +3,6 @@ from __future__ import annotations
 from guildmaster_ai.adventurers.base_adventurer import BaseAdventurer
 from guildmaster_ai.core.messages import QuestResult
 from guildmaster_ai.core.quest import Quest
-from guildmaster_ai.llm.base_provider import LLMMessage
 
 _MAX_TOOL_ITERATIONS = 10
 
@@ -22,13 +21,13 @@ class GeneralAdventurer(BaseAdventurer):
     async def execute(self, quest: Quest) -> QuestResult:
         """Execute a quest using an LLM call loop with tool handling."""
         self._reset_conversation()
-        self._conversation.append(LLMMessage(role="user", content=quest.description))
+        self._add_user_message(quest.description)
 
         for _ in range(_MAX_TOOL_ITERATIONS):
             response = await self._call_llm()
 
             # No tool calls — we have a final answer
-            if not response.tool_calls:
+            if not response.has_tool_calls:
                 return QuestResult(
                     sender=self.name or self.id,
                     quest_id=quest.id,
@@ -37,23 +36,15 @@ class GeneralAdventurer(BaseAdventurer):
                 )
 
             # Record the assistant message with tool calls
-            self._conversation.append(
-                LLMMessage(
-                    role="assistant",
-                    content=response.content,
-                    tool_calls=response.tool_calls,
-                )
-            )
+            self._add_assistant_response(response)
 
             # Process each tool call and add tool results
             for tool_call in response.tool_calls:
                 tool_result = await self._handle_tool_call(tool_call)
-                self._conversation.append(
-                    LLMMessage(
-                        role="tool",
-                        content=tool_result,
-                        tool_call_id=tool_call.get("id", ""),
-                    )
+                self._add_tool_result(
+                    tool_call_id=tool_call.get("id", ""),
+                    name=tool_call.get("name", ""),
+                    content=tool_result,
                 )
 
         # Exhausted iterations — return what we have

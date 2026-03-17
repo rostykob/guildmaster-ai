@@ -1,68 +1,46 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel
-
-# ── Data models ──────────────────────────────────────────────────────────────
+from guildmaster_ai.llm.types import GuildLLM
 
 
-class LLMMessage(BaseModel):
-    """A single message in a chat-completion conversation."""
+def create_chat_model(
+    provider: str = "openrouter",
+    *,
+    api_key: str = "",
+    model: str = "anthropic/claude-sonnet-4-20250514",
+    base_url: str = "https://openrouter.ai/api/v1",
+    temperature: float = 0.7,
+    max_tokens: int = 4096,
+    **kwargs: Any,
+) -> GuildLLM:
+    """Factory that returns a configured LangChain chat model.
 
-    role: Literal["system", "user", "assistant", "tool"]
-    content: str
-    name: str | None = None
-    tool_calls: list[dict[str, Any]] | None = None
-    tool_call_id: str | None = None
+    Supports ``"openrouter"`` (default) which uses :class:`ChatOpenRouter`.
+    You can also pass ``"openai"`` to get a plain ``ChatOpenAI``.
+    """
+    if provider == "openrouter":
+        from guildmaster_ai.llm.openrouter import ChatOpenRouter
 
+        return ChatOpenRouter(
+            api_key=api_key,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
 
-class LLMResponse(BaseModel):
-    """Structured response returned by an LLM provider."""
+    if provider == "openai":
+        from langchain_openai import ChatOpenAI
 
-    content: str
-    model: str
-    usage: dict[str, int]
-    tool_calls: list[dict[str, Any]] | None = None
-    finish_reason: str | None = None
+        return ChatOpenAI(
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
 
-
-# ── Abstract provider ────────────────────────────────────────────────────────
-
-
-class BaseLLMProvider(ABC):
-    """Interface that every LLM backend must implement."""
-
-    def __init__(
-        self,
-        api_key: str,
-        base_url: str,
-        default_model: str,
-    ) -> None:
-        self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
-        self.default_model = default_model
-
-    @abstractmethod
-    async def complete(
-        self,
-        messages: list[LLMMessage],
-        *,
-        model: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 4096,
-        tools: list[dict[str, Any]] | None = None,
-    ) -> LLMResponse: ...
-
-    @abstractmethod
-    async def stream(
-        self,
-        messages: list[LLMMessage],
-        *,
-        model: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 4096,
-        tools: list[dict[str, Any]] | None = None,
-    ) -> AsyncIterator[str]: ...
+    raise ValueError(f"Unknown provider: {provider!r}. Supported: 'openrouter', 'openai'.")

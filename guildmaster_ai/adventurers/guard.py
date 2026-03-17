@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from guildmaster_ai.core.messages import GuardVerdict
-from guildmaster_ai.llm.base_provider import BaseLLMProvider
+from guildmaster_ai.llm.types import GuildLLM
 
 
 class Guard:
@@ -9,10 +9,10 @@ class Guard:
 
     def __init__(
         self,
-        llm_provider: BaseLLMProvider | None = None,
+        llm: GuildLLM | None = None,
         model: str | None = None,
     ) -> None:
-        self._llm = llm_provider
+        self._llm = llm
         self._model = model
 
     async def evaluate(

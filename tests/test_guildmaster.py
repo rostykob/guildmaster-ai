@@ -9,14 +9,14 @@ from guildmaster_ai.core.messages import QuestDraft
 
 class TestGuildmaster:
     def test_register_adventurer(self, mock_llm) -> None:
-        gm = Guildmaster(llm_provider=mock_llm)
-        adv = GeneralAdventurer(llm_provider=mock_llm)
+        gm = Guildmaster(llm=mock_llm)
+        adv = GeneralAdventurer(llm=mock_llm)
         gm.register_adventurer(adv)
         assert len(gm.roster) == 1
 
     def test_talents_assigned_on_registration(self, mock_llm) -> None:
-        gm = Guildmaster(llm_provider=mock_llm)
-        adv = GeneralAdventurer(llm_provider=mock_llm)
+        gm = Guildmaster(llm=mock_llm)
+        adv = GeneralAdventurer(llm=mock_llm)
         assert adv.talents == []  # no talents before registration
         gm.register_adventurer(adv)
         assert len(adv.talents) > 0  # talents inferred from system prompt
@@ -24,15 +24,15 @@ class TestGuildmaster:
     def test_talents_include_weapon_names(self, mock_llm) -> None:
         from guildmaster_ai.weapons.web_search import WebSearchWeapon
 
-        gm = Guildmaster(llm_provider=mock_llm)
-        adv = GeneralAdventurer(llm_provider=mock_llm)
+        gm = Guildmaster(llm=mock_llm)
+        adv = GeneralAdventurer(llm=mock_llm)
         adv.equip_weapon(WebSearchWeapon())
         gm.register_adventurer(adv)
         assert "web_search" in adv.talents
 
     def test_check_feasibility_feasible(self, mock_llm) -> None:
-        gm = Guildmaster(llm_provider=mock_llm)
-        adv = GeneralAdventurer(llm_provider=mock_llm)
+        gm = Guildmaster(llm=mock_llm)
+        adv = GeneralAdventurer(llm=mock_llm)
         gm.register_adventurer(adv)
 
         draft = QuestDraft(
@@ -46,8 +46,8 @@ class TestGuildmaster:
         assert len(report.matched_adventurers) >= 1
 
     def test_check_feasibility_not_feasible(self, mock_llm) -> None:
-        gm = Guildmaster(llm_provider=mock_llm)
-        adv = GeneralAdventurer(llm_provider=mock_llm)
+        gm = Guildmaster(llm=mock_llm)
+        adv = GeneralAdventurer(llm=mock_llm)
         gm.register_adventurer(adv)
 
         draft = QuestDraft(
@@ -61,8 +61,8 @@ class TestGuildmaster:
         assert "quantum_computing" in report.missing_talents
 
     def test_match_adventurers(self, mock_llm, sample_quest) -> None:
-        gm = Guildmaster(llm_provider=mock_llm)
-        adv = GeneralAdventurer(llm_provider=mock_llm)
+        gm = Guildmaster(llm=mock_llm)
+        adv = GeneralAdventurer(llm=mock_llm)
         gm.register_adventurer(adv)
         matched = gm.match_adventurers(sample_quest)
         assert len(matched) >= 1

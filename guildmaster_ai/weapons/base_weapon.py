@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+import json
 from typing import Any
 
+from langchain_core.tools import BaseTool
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import BaseModel
 
 
@@ -14,41 +16,46 @@ class WeaponSchema(BaseModel):
     parameters: dict[str, Any]
 
 
-class BaseWeapon(ABC):
-    """Abstract base class for all weapons (tools)."""
+class BaseWeapon(BaseTool):  # type: ignore[misc]
+    """Abstract base class for all weapons (tools).
 
-    @property
-    @abstractmethod
-    def name(self) -> str: ...
+    Extends LangChain ``BaseTool`` so weapons are natively compatible with
+    LangChain agents, ``bind_tools()``, and ``create_agent()``.
 
-    @property
-    @abstractmethod
-    def description(self) -> str: ...
+    Subclasses must set ``name``, ``description``, ``args_schema``
+    (a Pydantic model) and implement :meth:`execute`.
+    """
 
-    @property
-    @abstractmethod
-    def parameters(self) -> dict[str, Any]:
-        """JSON Schema dict describing the weapon's input parameters."""
-        ...
+    def _run(self, **kwargs: Any) -> str:  # type: ignore[override]
+        """Sync execution — raises because this framework is async-first."""
+        raise NotImplementedError("BaseWeapon is async-only. Use ainvoke().")
 
-    @abstractmethod
-    async def execute(self, **kwargs: Any) -> dict[str, Any]: ...
+    async def _arun(self, **kwargs: Any) -> str:  # type: ignore[override]
+        """Bridge to :meth:`execute` for LangChain async invocation."""
+        kwargs.pop("run_manager", None)
+        result = await self.execute(**kwargs)
+        return json.dumps(result) if isinstance(result, dict) else str(result)
 
-    def schema(self) -> WeaponSchema:
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
+        """Execute the weapon and return a dict result.
+
+        Override this in subclasses.
+        """
+        raise NotImplementedError
+
+    def schema(self) -> WeaponSchema:  # type: ignore[override]
         """Return a ``WeaponSchema`` built from this weapon's properties."""
+        params = (
+            self.args_schema.model_json_schema()
+            if self.args_schema
+            else {"type": "object", "properties": {}}
+        )
         return WeaponSchema(
             name=self.name,
             description=self.description,
-            parameters=self.parameters,
+            parameters=params,
         )
 
     def to_tool_spec(self) -> dict[str, Any]:
         """Return an OpenAI-compatible function tool specification."""
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
-            },
-        }
+        return convert_to_openai_tool(self)
