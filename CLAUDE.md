@@ -36,14 +36,22 @@ mypy guildmaster_ai
 
 ```
 guildmaster_ai/
-  core/       — Domain models, no LLM logic. Quest, QuestBoard, Party, Messages, Exceptions.
-  adventurers/ — All agent implementations. BaseAdventurer is the abstract base.
-  weapons/    — Tool abstractions. BaseWeapon extends LangChain BaseTool.
-  armor/      — Guardrail abstractions. BaseArmor defines pre/post hooks.
-  memory/     — SQLiteStore for metadata, ChromaStore for embeddings.
-  llm/        — LangChain chat model factory, ChatOpenRouter wrapper.
-  sdk/        — Guild (runtime) and GuildBuilder (fluent config API).
-  config/     — GuildSettings via pydantic-settings (env vars, .env file).
+  core/           — Domain models, no LLM logic.
+                    Quest, QuestBoard, Party, Messages, Exceptions.
+  adventurers/    — All agent implementations.
+                    BaseAdventurer is the abstract base.
+                    Concrete: GeneralAdventurer, Guildmaster, Receptionist,
+                              Librarian, Guard.
+  weapons/        — Tool abstractions. BaseWeapon extends LangChain BaseTool.
+                    Implementations: FileReadWeapon, WebSearchWeapon.
+  armor/          — Guardrail abstractions. BaseArmor defines pre/post hooks.
+                    Implementations: ContentFilterArmor, RateLimiterArmor.
+  memory/         — SQLiteStore for metadata, ChromaStore for embeddings.
+  llm/            — LangChain chat model factory, ChatOpenRouter wrapper,
+                    GuildLLM/GuildResponse wrapper types.
+  sdk/            — Guild (runtime) and GuildBuilder (fluent config API).
+  config/         — GuildSettings via pydantic-settings (env vars, .env file).
+  cli/            — CLI layer (planned, not yet implemented).
 ```
 
 ## Conventions
@@ -52,10 +60,13 @@ guildmaster_ai/
 - **Pydantic models**: All data structures use Pydantic v2 BaseModel
 - **`from __future__ import annotations`** in every Python file
 - **Type annotations**: Full typing on all public APIs
-- **Env prefix**: All settings use `GUILD_` prefix (e.g., `GUILD_LLM_API_KEY`)
+- **Env prefix**: Framework settings use the `GUILD_` prefix (e.g., `GUILD_LLM_PROVIDER`).
+  Provider API keys use their **official env var names** (e.g., `OPENROUTER_API_KEY`) —
+  no `GUILD_` prefix — so existing credentials work out of the box.
 - **Domain language**: Use the guild metaphor consistently (Quest not Task, Weapon not Tool, Armor not Guardrail, Adventurer not Agent)
 - **State transitions**: Quest status changes must go through `Quest.transition()` which validates against `VALID_TRANSITIONS`
 - **Inter-agent comms**: Agents exchange Pydantic message objects, not raw strings
+- **LangChain isolation**: All LangChain imports are confined to `llm/types.py`, `llm/openrouter.py`, and `weapons/base_weapon.py`. Other modules use guild-native wrappers (`GuildLLM`, `GuildResponse`, `guild_complete`).
 
 ## Testing
 
@@ -63,6 +74,7 @@ guildmaster_ai/
 - Use `pytest-asyncio` with `asyncio_mode = "auto"`
 - Mock LLM providers for unit tests — never call real APIs in tests
 - Test fixtures go in `tests/conftest.py`
+- `MockChatModel` in `conftest.py` extends LangChain `BaseChatModel` with configurable responses
 
 ## Quest Status Flow
 
