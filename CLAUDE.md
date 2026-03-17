@@ -47,8 +47,9 @@ guildmaster_ai/
   armor/          — Guardrail abstractions. BaseArmor defines pre/post hooks.
                     Implementations: ContentFilterArmor, RateLimiterArmor.
   memory/         — SQLiteStore for metadata, ChromaStore for embeddings.
-  llm/            — LangChain chat model factory, ChatOpenRouter wrapper,
-                    GuildLLM/GuildResponse wrapper types.
+  llm/            — LangChain chat model factory and provider wrappers.
+                    types.py (GuildLLM, GuildResponse), base_provider.py (factory),
+                    openrouter.py, anthropic.py, openai.py, google.py, azure.py, bedrock.py.
   sdk/            — Guild (runtime) and GuildBuilder (fluent config API).
   config/         — GuildSettings via pydantic-settings (env vars, .env file).
   cli/            — CLI layer (planned, not yet implemented).

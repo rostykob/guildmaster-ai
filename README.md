@@ -47,6 +47,19 @@ cd guildmaster-ai
 uv sync --all-extras
 ```
 
+### Supported Providers
+
+| Provider string | Class | Package extra | API key env var |
+|---|---|---|---|
+| `openrouter` | `ChatOpenRouter` | `openrouter` | `OPENROUTER_API_KEY` |
+| `anthropic` | `ChatAnthropic` | `anthropic` | `ANTHROPIC_API_KEY` |
+| `openai` | `ChatOpenAIProvider` | `openai` | `OPENAI_API_KEY` |
+| `google` / `gemini` | `ChatGoogle` | `google` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
+| `azure` | `ChatAzureOpenAI` | `azure` | `AZURE_OPENAI_API_KEY` |
+| `bedrock` | `ChatBedrock` | `bedrock` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` |
+
+All providers are thin wrappers around their respective LangChain chat model classes.
+
 ### Usage
 
 ```python
@@ -64,6 +77,27 @@ guild = (
 
 result = asyncio.run(guild.post_quest("Summarise the key differences between Python and Rust"))
 print(result.summary)
+```
+
+### Switching Providers
+
+```python
+# Anthropic — reads ANTHROPIC_API_KEY from env
+guild = GuildBuilder().with_llm_provider("anthropic").register_adventurer(GeneralAdventurer).build()
+
+# OpenAI — reads OPENAI_API_KEY from env
+guild = GuildBuilder().with_llm_provider("openai", model="gpt-4o").register_adventurer(GeneralAdventurer).build()
+
+# Google Gemini — reads GEMINI_API_KEY or GOOGLE_API_KEY from env
+guild = GuildBuilder().with_llm_provider("google", model="gemini-2.0-flash").register_adventurer(GeneralAdventurer).build()
+
+# Azure OpenAI — reads AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT from env
+guild = GuildBuilder().with_llm_provider("azure", model="gpt-4o").register_adventurer(GeneralAdventurer).build()
+
+# AWS Bedrock — reads AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY + AWS_DEFAULT_REGION from env
+guild = GuildBuilder().with_llm_provider(
+    "bedrock", model="anthropic.claude-3-5-sonnet-20241022-v2:0"
+).register_adventurer(GeneralAdventurer).build()
 ```
 
 ### Using Any LangChain Chat Model
