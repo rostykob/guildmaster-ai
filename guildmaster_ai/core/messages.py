@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from guildmaster_ai.core.quest import QuestRank
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
+from guildmaster_ai.core.utils import _utcnow
 
 
 class BaseMessage(BaseModel):

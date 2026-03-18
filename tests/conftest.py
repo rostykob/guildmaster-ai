@@ -44,6 +44,10 @@ class MockChatModel(BaseChatModel):  # type: ignore[misc]
         )
         return ChatResult(generations=[ChatGeneration(message=msg)])
 
+    def bind_tools(self, tools: Any, **kwargs: Any) -> MockChatModel:
+        """Return self — tools are ignored in the mock."""
+        return self
+
 
 @pytest.fixture
 def mock_llm() -> MockChatModel:

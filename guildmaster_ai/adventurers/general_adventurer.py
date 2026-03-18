@@ -1,65 +1,13 @@
 from __future__ import annotations
 
-import logging
-
 from guildmaster_ai.adventurers.base_adventurer import BaseAdventurer
-from guildmaster_ai.core.messages import QuestResult
-from guildmaster_ai.core.quest import Quest
-
-logger = logging.getLogger("guildmaster.adventurer.general")
-
-_MAX_TOOL_ITERATIONS = 10
 
 
 class GeneralAdventurer(BaseAdventurer):
     """A general-purpose adventurer capable of handling a wide range of tasks."""
 
-    @property
-    def system_prompt(self) -> str:
-        return (
-            "You are a versatile adventurer capable of handling general tasks. "
-            "Use any tools at your disposal to accomplish the quest objective. "
-            "Be thorough, accurate, and concise in your responses."
-        )
-
-    async def execute(self, quest: Quest) -> QuestResult:
-        """Execute a quest using an LLM call loop with tool handling."""
-        logger.info("Starting quest %s: %r", quest.id[:8], quest.title)
-        self._reset_conversation()
-        self._add_user_message(quest.description)
-
-        for iteration in range(_MAX_TOOL_ITERATIONS):
-            logger.debug("Iteration %d/%d", iteration + 1, _MAX_TOOL_ITERATIONS)
-            response = await self._call_llm()
-
-            # No tool calls — we have a final answer
-            if not response.has_tool_calls:
-                logger.info("Quest %s completed in %d iteration(s)", quest.id[:8], iteration + 1)
-                return QuestResult(
-                    sender=self.name or self.id,
-                    quest_id=quest.id,
-                    success=True,
-                    summary=response.content,
-                )
-
-            # Record the assistant message with tool calls
-            self._add_assistant_response(response)
-
-            # Process each tool call and add tool results
-            for tool_call in response.tool_calls:
-                tool_result = await self._handle_tool_call(tool_call)
-                self._add_tool_result(
-                    tool_call_id=tool_call.get("id", ""),
-                    name=tool_call.get("name", ""),
-                    content=tool_result,
-                )
-
-        # Exhausted iterations — return what we have
-        logger.warning("Quest %s exceeded max iterations (%d)", quest.id[:8], _MAX_TOOL_ITERATIONS)
-        return QuestResult(
-            sender=self.name or self.id,
-            quest_id=quest.id,
-            success=False,
-            summary="Reached maximum tool call iterations without a final answer.",
-            failure_reason="max_iterations_exceeded",
-        )
+    system_prompt = (
+        "You are a versatile adventurer capable of handling general tasks. "
+        "Use any tools at your disposal to accomplish the quest objective. "
+        "Be thorough, accurate, and concise in your responses."
+    )

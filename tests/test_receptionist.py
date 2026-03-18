@@ -21,12 +21,14 @@ class TestReceptionist:
     async def test_intake_with_llm(self) -> None:
         llm = MockChatModel(
             response_content='{"title": "Web Scraper", "description": "Build a scraper", '
-            '"required_talents": ["coding"], "acceptance_criteria": ["Works"]}'
+            '"acceptance_criteria": ["Works"]}'
         )
         r = Receptionist(llm=llm)
         draft = await r.intake("Build a web scraper")
         assert draft.title == "Web Scraper"
-        assert "coding" in draft.required_talents
+        assert draft.acceptance_criteria == ["Works"]
+        # Receptionist no longer assigns talents — that's the Guildmaster's job
+        assert draft.required_talents == []
 
     @pytest.mark.asyncio
     async def test_intake_with_clarification(self) -> None:
@@ -77,5 +79,5 @@ class TestReceptionist:
                 title="X", description="X",
             )
         )
-        # Brief description + no criteria + no talents → 3 questions
-        assert len(questions) == 3
+        # Brief description + no criteria → 2 questions (talents are Guildmaster's job)
+        assert len(questions) == 2

@@ -74,7 +74,7 @@ class TestLibrarian:
 
         result = _make_result(quest, success=True)
         obs = await lib.analyze_quest(quest, result)
-        assert "had_failures" in obs.tags
+        assert "pattern:had_failures" in obs.tags
         assert any("failed" in lesson.lower() for lesson in obs.lessons_learned)
 
     @pytest.mark.asyncio

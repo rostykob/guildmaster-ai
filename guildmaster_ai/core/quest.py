@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import enum
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from guildmaster_ai.core.exceptions import InvalidQuestTransitionError
+from guildmaster_ai.core.utils import _utcnow
 
 
 class QuestRank(enum.IntEnum):
@@ -43,10 +44,6 @@ VALID_TRANSITIONS: dict[QuestStatus, set[QuestStatus]] = {
     QuestStatus.FAILED: {QuestStatus.POSTED, QuestStatus.ARCHIVED},
     QuestStatus.ARCHIVED: set(),
 }
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
 
 
 class QuestHistoryEntry(BaseModel):

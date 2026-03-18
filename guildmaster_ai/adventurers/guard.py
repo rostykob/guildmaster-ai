@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 import logging
 
 from guildmaster_ai.adventurers.base_guard import BaseGuard
 from guildmaster_ai.core.messages import GuardMetrics, GuardVerdict
+from guildmaster_ai.core.utils import parse_llm_json
 from guildmaster_ai.llm.types import GuildLLM, guild_complete
 
 logger = logging.getLogger("guildmaster.guard")
@@ -90,10 +90,7 @@ class Guard(BaseGuard):
     def _parse_response(self, raw: str) -> GuardVerdict:
         """Parse LLM JSON response into a GuardVerdict."""
         try:
-            text = raw.strip()
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-            data = json.loads(text)
+            data = parse_llm_json(raw)
 
             metrics = GuardMetrics(
                 hallucination=float(data.get("hallucination", 0.0)),
@@ -122,7 +119,7 @@ class Guard(BaseGuard):
                 reason=data.get("reason", ""),
                 metrics=metrics,
             )
-        except (json.JSONDecodeError, KeyError, ValueError):
+        except (ValueError, KeyError):
             logger.warning("Failed to parse guard response — defaulting to pass")
             return GuardVerdict(
                 sender=self.name,

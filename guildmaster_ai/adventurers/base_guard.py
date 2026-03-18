@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 
 from guildmaster_ai.core.messages import GuardVerdict
 
+logger = logging.getLogger("guildmaster.guard")
 
-# TODO No logger here add logging
+
 class BaseGuard(ABC):
     """Abstract base class for all guard (LLM-as-judge) implementations.
 

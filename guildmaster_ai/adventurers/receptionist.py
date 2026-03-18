@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Awaitable, Callable
 
 from guildmaster_ai.core.messages import QuestDraft, QuestResult
+from guildmaster_ai.core.utils import parse_llm_json
 from guildmaster_ai.llm.types import GuildLLM, guild_complete
 
 logger = logging.getLogger("guildmaster.receptionist")
@@ -19,11 +19,9 @@ class Receptionist:
     def __init__(
         self,
         llm: GuildLLM | None = None,
-        model: str | None = None,
         max_rounds: int = 3,
     ) -> None:
         self._llm = llm
-        self._model = model
         self._max_rounds = max_rounds
 
     async def intake(
@@ -97,11 +95,12 @@ class Receptionist:
         content = await guild_complete(
             self._llm,
             system=(
-                "You are a guild receptionist. Extract a structured quest from "
-                "the user's request. Respond with ONLY a JSON object containing: "
-                '"title", "description", "required_talents" (list of strings), '
-                '"acceptance_criteria" (list of strings). '
-                "Keep the title concise (max 80 chars)."
+                "You are a guild receptionist. Your job is to understand "
+                "the user's request and produce a clear, well-structured quest. "
+                "Respond with ONLY a JSON object containing: "
+                '"title" (concise, max 80 chars), "description" (detailed), '
+                '"acceptance_criteria" (list of strings defining done). '
+                "Do NOT assign talents or skills — that is the Guildmaster's job."
             ),
             user=user_request,
         )
@@ -111,18 +110,13 @@ class Receptionist:
     def _parse_draft_response(response_content: str, fallback_text: str) -> QuestDraft:
         """Try to parse LLM JSON into a QuestDraft, falling back gracefully."""
         try:
-            # Strip markdown fences if present
-            text = response_content.strip()
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-            data = json.loads(text)
+            data = parse_llm_json(response_content)
             return QuestDraft(
                 title=data.get("title", fallback_text[:80]),
                 description=data.get("description", fallback_text),
-                required_talents=data.get("required_talents", []),
                 acceptance_criteria=data.get("acceptance_criteria", []),
             )
-        except (json.JSONDecodeError, KeyError):
+        except (ValueError, KeyError):
             return QuestDraft(title=fallback_text[:80], description=fallback_text)
 
     @staticmethod
@@ -138,16 +132,10 @@ class Receptionist:
             questions.append(
                 "What criteria should be met for this quest to be considered complete?"
             )
-        if not draft.required_talents:
-            questions.append(
-                "Are there specific skills or talents required for this quest?"
-            )
         return questions
 
     @staticmethod
-    def _apply_clarifications(
-        draft: QuestDraft, answers: dict[str, str]
-    ) -> QuestDraft:
+    def _apply_clarifications(draft: QuestDraft, answers: dict[str, str]) -> QuestDraft:
         """Merge clarification answers back into the draft."""
         extra_text = " ".join(answers.values())
         return QuestDraft(

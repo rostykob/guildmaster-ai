@@ -78,8 +78,8 @@ class Guild:
 
     def register_adventurer(self, adventurer: BaseAdventurer) -> None:
         """Register an adventurer with the guild, injecting the LLM if needed."""
-        if adventurer._llm is None:
-            adventurer._llm = self._llm
+        if adventurer.llm is None:
+            adventurer.llm = self._llm
         self._guildmaster.register_adventurer(adventurer)
 
     def enable_guard(self, guard: BaseGuard | None = None) -> None:
@@ -128,6 +128,13 @@ class Guild:
         # Phase 1: Planning
         logger.info("Phase 1: Planning")
         draft = await self._receptionist.intake(request)
+
+        # Guildmaster determines required talents (not the receptionist)
+        if not draft.required_talents:
+            talents = await self._guildmaster.assess_quest_talents(draft)
+            draft.required_talents = talents
+            logger.debug("Guildmaster assessed talents: %s", talents)
+
         feasibility = self._guildmaster.check_feasibility(draft)
 
         if not feasibility.feasible:
