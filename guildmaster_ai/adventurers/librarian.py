@@ -55,7 +55,9 @@ class Librarian:
         }
 
     async def analyze_quest(
-        self, quest: Quest, result: QuestResult,
+        self,
+        quest: Quest,
+        result: QuestResult,
     ) -> QuestObservation:
         """Analyze a quest's history and result to produce a tagged observation."""
         if self._llm is not None:
@@ -65,7 +67,8 @@ class Librarian:
         return self._rule_based_analyze(quest, result)
 
     async def analyze_batch(
-        self, quests: list[tuple[Quest, QuestResult]],
+        self,
+        quests: list[tuple[Quest, QuestResult]],
     ) -> list[QuestObservation]:
         """Analyze multiple quests and return observations for each."""
         observations: list[QuestObservation] = []
@@ -102,8 +105,62 @@ class Librarian:
 
         where = {"tags": {"$in": tags}} if tags else None
         return await self._vector_store.query(
-            query, n_results=n_results, where=where,
+            query,
+            n_results=n_results,
+            where=where,
         )
+
+    async def search_similar_quests(
+        self,
+        quest_description: str,
+        n_results: int = 3,
+    ) -> list[QuestObservation]:
+        """Search for past observations similar to the given quest description.
+
+        Uses the vector store for semantic search when available, falling back
+        to keyword matching against in-memory observations.
+        """
+        logger.debug(
+            "Searching for similar quests (n_results=%d, vector_store=%s)",
+            n_results,
+            self._vector_store is not None,
+        )
+
+        if self._vector_store is not None:
+            raw_results = await self._vector_store.query(
+                quest_description,
+                n_results=n_results,
+            )
+            observations: list[QuestObservation] = []
+            for doc in raw_results:
+                # ChromaStore returns dicts with metadata nested under
+                # "metadata" key; extract tags from there or top-level.
+                meta = doc.get("metadata", {})
+                raw_tags = meta.get("tags", doc.get("tags", ""))
+                tags = raw_tags.split(",") if isinstance(raw_tags, str) else raw_tags
+                observations.append(
+                    QuestObservation(
+                        sender="librarian",
+                        quest_id=meta.get("quest_id", doc.get("quest_id", "")),
+                        summary=doc.get("document", doc.get("summary", "")),
+                        tags=tags,
+                    )
+                )
+            logger.debug("Vector search returned %d results", len(observations))
+            return observations[:n_results]
+
+        # Fallback: keyword matching against in-memory observations
+        desc_words = quest_description.lower().split()
+        scored: list[tuple[int, QuestObservation]] = []
+        for obs in self._observations:
+            summary_lower = obs.summary.lower()
+            score = sum(1 for word in desc_words if word in summary_lower)
+            if score > 0:
+                scored.append((score, obs))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        results = [obs for _, obs in scored[:n_results]]
+        logger.debug("Keyword search returned %d results", len(results))
+        return results
 
     # ── Internal helpers ──────────────────────────────────────────────
 
@@ -128,9 +185,7 @@ class Librarian:
             tags.append(f"talent:{talent}")
 
         # Analyze history for patterns
-        transition_count = sum(
-            1 for h in quest.history if h.event_type == "transition"
-        )
+        transition_count = sum(1 for h in quest.history if h.event_type == "transition")
         if transition_count > 5:
             tags.append("pattern:complex_lifecycle")
             lessons.append("Quest went through many state transitions.")
@@ -139,8 +194,7 @@ class Librarian:
         failed_count = sum(
             1
             for h in quest.history
-            if h.event_type == "transition"
-            and h.payload.get("to") == "failed"
+            if h.event_type == "transition" and h.payload.get("to") == "failed"
         )
         if failed_count > 0:
             tags.append("pattern:had_failures")
@@ -167,14 +221,15 @@ class Librarian:
         )
 
     async def _llm_analyze(
-        self, quest: Quest, result: QuestResult,
+        self,
+        quest: Quest,
+        result: QuestResult,
     ) -> QuestObservation:
         """Use the LLM to generate a richer observation."""
         assert self._llm is not None
 
         history_text = "\n".join(
-            f"- [{h.timestamp.isoformat()}] {h.actor}: "
-            f"{h.event_type} {h.payload}"
+            f"- [{h.timestamp.isoformat()}] {h.actor}: {h.event_type} {h.payload}"
             for h in quest.history
         )
 
@@ -208,7 +263,10 @@ class Librarian:
         return self._parse_observation_response(content, quest, result)
 
     def _parse_observation_response(
-        self, response_content: str, quest: Quest, result: QuestResult,
+        self,
+        response_content: str,
+        quest: Quest,
+        result: QuestResult,
     ) -> QuestObservation:
         """Parse LLM response into a QuestObservation, falling back to rules."""
         try:

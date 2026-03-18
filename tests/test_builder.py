@@ -74,12 +74,7 @@ class TestBuild:
     def test_register_adventurer_instance(self) -> None:
         mock_llm = MockChatModel()
         adv = GeneralAdventurer(name="Custom")
-        guild = (
-            GuildBuilder()
-            .with_llm_provider(mock_llm)
-            .register_adventurer(adv)
-            .build()
-        )
+        guild = GuildBuilder().with_llm_provider(mock_llm).register_adventurer(adv).build()
         assert len(guild.roster) == 1
         assert guild.roster[0].name == "Custom"
 
@@ -95,32 +90,17 @@ class TestBuild:
 
     def test_with_guard_default(self) -> None:
         mock_llm = MockChatModel()
-        guild = (
-            GuildBuilder()
-            .with_llm_provider(mock_llm)
-            .with_guard()
-            .build()
-        )
+        guild = GuildBuilder().with_llm_provider(mock_llm).with_guard().build()
         assert guild.info.guard_enabled is True
 
     def test_with_guard_custom(self) -> None:
         mock_llm = MockChatModel()
-        guild = (
-            GuildBuilder()
-            .with_llm_provider(mock_llm)
-            .with_guard(_CustomGuard())
-            .build()
-        )
+        guild = GuildBuilder().with_llm_provider(mock_llm).with_guard(_CustomGuard()).build()
         assert guild.info.guard_enabled is True
 
     def test_with_settings(self) -> None:
         mock_llm = MockChatModel()
-        guild = (
-            GuildBuilder()
-            .with_llm_provider(mock_llm)
-            .with_settings(log_level="DEBUG")
-            .build()
-        )
+        guild = GuildBuilder().with_llm_provider(mock_llm).with_settings(log_level="DEBUG").build()
         assert guild.settings.log_level == "DEBUG"
 
     def test_fluent_chaining(self) -> None:

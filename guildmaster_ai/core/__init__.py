@@ -5,6 +5,7 @@ from guildmaster_ai.core.exceptions import (
     InvalidQuestTransitionError,
     NoEligibleAdventurersError,
     QuestBoardEmptyError,
+    QuestDecompositionError,
     QuestFailedError,
 )
 from guildmaster_ai.core.messages import (
@@ -12,12 +13,15 @@ from guildmaster_ai.core.messages import (
     BaseMessage,
     GuardMetrics,
     GuardVerdict,
+    PartyLeaderDecision,
     QuestClarificationRequest,
     QuestClarificationResponse,
     QuestDraft,
     QuestFeasibilityReport,
     QuestObservation,
+    QuestPlan,
     QuestResult,
+    SubtaskSpec,
 )
 from guildmaster_ai.core.party import Party, PartyMember
 from guildmaster_ai.core.quest import Quest, QuestRank, QuestStatus
@@ -32,17 +36,21 @@ __all__ = [
     "InvalidQuestTransitionError",
     "NoEligibleAdventurersError",
     "Party",
+    "PartyLeaderDecision",
     "PartyMember",
     "Quest",
     "QuestBoardEmptyError",
     "QuestClarificationRequest",
     "QuestClarificationResponse",
+    "QuestDecompositionError",
     "QuestDraft",
     "QuestFailedError",
     "QuestFeasibilityReport",
     "QuestObservation",
+    "QuestPlan",
     "QuestRank",
     "QuestResult",
     "QuestStatus",
+    "SubtaskSpec",
     "parse_llm_json",
 ]

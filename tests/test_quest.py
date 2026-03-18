@@ -66,3 +66,23 @@ class TestQuest:
         sample_quest.add_history("test_actor", "custom_event", {"key": "value"})
         assert len(sample_quest.history) == 1
         assert sample_quest.history[0].event_type == "custom_event"
+
+    def test_quest_parent_id_default_none(self) -> None:
+        quest = Quest(title="Test", description="Test")
+        assert quest.parent_quest_id is None
+
+    def test_quest_is_subtask_property(self) -> None:
+        parent = Quest(title="Parent", description="Parent quest")
+        child = Quest(
+            title="Child",
+            description="Child quest",
+            parent_quest_id=parent.id,
+        )
+        assert not parent.is_subtask
+        assert child.is_subtask
+
+    def test_quest_is_composite_flag(self) -> None:
+        quest = Quest(title="Test", description="Test")
+        assert quest.is_composite is False
+        quest.is_composite = True
+        assert quest.is_composite is True

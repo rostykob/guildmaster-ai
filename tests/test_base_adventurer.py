@@ -202,9 +202,7 @@ class TestExecute:
     async def test_single_tool_round(self) -> None:
         llm = MockChatModel(
             response_content="Used tool.",
-            mock_tool_calls=[
-                {"id": "tc1", "name": "dummy", "args": {}}
-            ],
+            mock_tool_calls=[{"id": "tc1", "name": "dummy", "args": {}}],
         )
         adv = SimpleAdventurer(llm=llm)
         adv.equip_weapon(_DummyWeaponInput())
@@ -216,9 +214,7 @@ class TestExecute:
     async def test_unknown_weapon_returns_error(self) -> None:
         llm = MockChatModel(
             response_content="Tried unknown weapon.",
-            mock_tool_calls=[
-                {"id": "tc1", "name": "nonexistent", "args": {}}
-            ],
+            mock_tool_calls=[{"id": "tc1", "name": "nonexistent", "args": {}}],
         )
         adv = SimpleAdventurer(llm=llm)
         quest = _make_quest()

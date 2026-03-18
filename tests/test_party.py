@@ -48,3 +48,22 @@ class TestParty:
         p1 = Party(name="A", leader_id="l")
         p2 = Party(name="B", leader_id="l")
         assert p1.id != p2.id
+
+    def test_party_subtask_assignment(self) -> None:
+        party = Party(name="Test Party", leader_id="leader-1")
+        party.add_member("adv-1")
+        party.add_member("adv-2")
+        party.assign_subtask("subtask-1", "adv-1")
+        party.assign_subtask("subtask-2", "adv-2")
+        assert party.subtask_assignments == {
+            "subtask-1": "adv-1",
+            "subtask-2": "adv-2",
+        }
+
+    def test_party_member_assigned_subtask_ids(self) -> None:
+        party = Party(name="Test Party", leader_id="leader-1")
+        party.add_member("adv-1")
+        party.assign_subtask("subtask-1", "adv-1")
+        party.assign_subtask("subtask-2", "adv-1")
+        member = party.members[0]
+        assert member.assigned_subtask_ids == ["subtask-1", "subtask-2"]

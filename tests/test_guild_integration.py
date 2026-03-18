@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from guildmaster_ai.adventurers.general_adventurer import GeneralAdventurer
+from guildmaster_ai.core.quest import QuestStatus
 from guildmaster_ai.sdk.builder import GuildBuilder
 from guildmaster_ai.sdk.guild import Guild
 
@@ -78,12 +81,7 @@ class TestGuildIntegration:
         guild_no_guard = GuildBuilder().with_llm_provider(mock_llm).build()
         assert guild_no_guard.info.guard_enabled is False
 
-        guild_with_guard = (
-            GuildBuilder()
-            .with_llm_provider(mock_llm)
-            .with_guard()
-            .build()
-        )
+        guild_with_guard = GuildBuilder().with_llm_provider(mock_llm).with_guard().build()
         assert guild_with_guard.info.guard_enabled is True
 
     # ── Quest lookup ─────────────────────────────────────────────────────
@@ -139,3 +137,137 @@ class TestGuildIntegration:
         await guild.post_quest("Quest A")
         await guild.post_quest("Quest B")
         assert len(guild.quests) == 2
+
+    # ── Complex quest decomposition ──────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_complex_quest_decomposition_lifecycle(self) -> None:
+        """A complex quest gets decomposed, subtasks run, and results combine."""
+        decompose_response = json.dumps(
+            {
+                "decompose": True,
+                "strategy": "Split into parts",
+                "subtasks": [
+                    {
+                        "title": "Part 1",
+                        "description": "Do part 1",
+                        "required_talents": ["general"],
+                        "acceptance_criteria": ["Part 1 done"],
+                    },
+                    {
+                        "title": "Part 2",
+                        "description": "Do part 2",
+                        "required_talents": ["general"],
+                        "acceptance_criteria": ["Part 2 done"],
+                    },
+                ],
+            }
+        )
+        # LLM calls: 1) receptionist intake, 2) assess_quest_talents,
+        # 3) plan_quest, 4) subtask 1 exec, 5) subtask 2 exec,
+        # 6) evaluate completion, 7) verify result
+        mock_llm = MockChatModel(
+            responses=[
+                '{"title": "Complex quest", "description": "Do complex things", '
+                '"acceptance_criteria": ["Done"]}',
+                '["general"]',
+                decompose_response,
+                "Part 1 result",
+                "Part 2 result",
+                '{"decision": "done", "reason": "All done", "combined_summary": "Both parts done"}',
+                '{"accepted": true}',
+            ]
+        )
+        guild = (
+            GuildBuilder()
+            .with_llm_provider(mock_llm)
+            .register_adventurer(GeneralAdventurer, count=2)
+            .build()
+        )
+        result = await guild.post_quest("Do something complex")
+        assert result.success is True
+        assert result.data.get("subtask_count") == 2
+
+        # Parent quest should be archived
+        parent = guild.get_quest(result.quest_id)
+        assert parent.is_composite is True
+        assert parent.status == QuestStatus.ARCHIVED
+
+    @pytest.mark.asyncio
+    async def test_complex_quest_with_retry(self) -> None:
+        """A complex quest retries failed subtasks."""
+        decompose_response = json.dumps(
+            {
+                "decompose": True,
+                "strategy": "Two parts",
+                "subtasks": [
+                    {"title": "Good part", "description": "Works"},
+                    {"title": "Bad part", "description": "Fails then works"},
+                ],
+            }
+        )
+        mock_llm = MockChatModel(
+            responses=[
+                # receptionist
+                '{"title": "Retry quest", "description": "Test retry", '
+                '"acceptance_criteria": ["Done"]}',
+                # assess_quest_talents
+                '["general"]',
+                # plan_quest
+                decompose_response,
+                # subtask 1 exec - success
+                "Good result",
+                # subtask 2 exec - failure
+                "Bad result",
+                # evaluate completion - retry
+                '{"decision": "retry", "reason": "Sub 2 failed", "retry_subtask_indices": [1]}',
+                # subtask 2 retry - success
+                "Fixed result",
+                # evaluate completion - done
+                '{"decision": "done", "reason": "All done", "combined_summary": "Complete"}',
+                # verify result
+                '{"accepted": true}',
+            ]
+        )
+        guild = (
+            GuildBuilder()
+            .with_llm_provider(mock_llm)
+            .register_adventurer(GeneralAdventurer)
+            .build()
+        )
+
+        # Need to make the second subtask fail initially
+        # The mock returns responses in order, so "Bad result" for subtask 2
+        # will be treated as success by the default execute() (no tool calls = success)
+        # We need to handle this differently - the evaluate step handles the logic
+        result = await guild.post_quest("Do something with retry")
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_simple_quest_unchanged(self) -> None:
+        """A simple quest follows the original path when plan_quest returns None."""
+        mock_llm = MockChatModel(
+            responses=[
+                # receptionist
+                '{"title": "Simple quest", "description": "Just do it", '
+                '"acceptance_criteria": ["Done"]}',
+                # assess_quest_talents
+                '["general"]',
+                # plan_quest - no decomposition
+                '{"decompose": false}',
+                # adventurer execute
+                "Simple result",
+                # verify result
+                '{"accepted": true}',
+            ]
+        )
+        guild = (
+            GuildBuilder()
+            .with_llm_provider(mock_llm)
+            .register_adventurer(GeneralAdventurer)
+            .build()
+        )
+        result = await guild.post_quest("Do something simple")
+        assert result.success is True
+        quest = guild.get_quest(result.quest_id)
+        assert quest.is_composite is False

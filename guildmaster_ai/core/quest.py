@@ -71,6 +71,11 @@ class Quest(BaseModel):
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 
+    # Composite quest fields
+    parent_quest_id: str | None = None
+    subtask_index: int | None = None
+    is_composite: bool = False
+
     def transition(
         self,
         new_status: QuestStatus,
@@ -109,6 +114,11 @@ class Quest(BaseModel):
                 payload=payload or {},
             )
         )
+
+    @property
+    def is_subtask(self) -> bool:
+        """Return True if this quest is a subtask of a composite quest."""
+        return self.parent_quest_id is not None
 
     @property
     def is_terminal(self) -> bool:

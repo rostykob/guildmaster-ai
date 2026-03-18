@@ -8,6 +8,7 @@ import pytest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from pydantic import Field
 
 from guildmaster_ai.core.messages import QuestDraft
 from guildmaster_ai.core.quest import Quest, QuestRank
@@ -17,6 +18,7 @@ class MockChatModel(BaseChatModel):  # type: ignore[misc]
     """Mock LangChain chat model for testing."""
 
     response_content: str = "Mock response"
+    responses: list[str] = Field(default_factory=list)
     mock_tool_calls: list[dict[str, Any]] | None = None
     call_count: int = 0
 
@@ -32,14 +34,18 @@ class MockChatModel(BaseChatModel):  # type: ignore[misc]
         **kwargs: Any,
     ) -> ChatResult:
         self.call_count += 1
+
+        # Use responses list if available, else fall back to response_content
+        if self.responses:
+            idx = min(self.call_count - 1, len(self.responses) - 1)
+            content = self.responses[idx]
+        else:
+            content = self.response_content
+
         # Return tool calls only on the first call (mimics a single tool round)
-        tool_calls = (
-            self.mock_tool_calls
-            if self.call_count == 1 and self.mock_tool_calls
-            else []
-        )
+        tool_calls = self.mock_tool_calls if self.call_count == 1 and self.mock_tool_calls else []
         msg = AIMessage(
-            content=self.response_content,
+            content=content,
             tool_calls=tool_calls or [],
         )
         return ChatResult(generations=[ChatGeneration(message=msg)])

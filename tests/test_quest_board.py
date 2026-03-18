@@ -25,13 +25,17 @@ class TestQuestBoard:
     def test_get_posted_quests(self) -> None:
         board = QuestBoard()
         q1 = Quest(
-            title="Q1", description="d1",
-            required_talents=["web_search"], rank=QuestRank.E,
+            title="Q1",
+            description="d1",
+            required_talents=["web_search"],
+            rank=QuestRank.E,
             acceptance_criteria=[],
         )
         q2 = Quest(
-            title="Q2", description="d2",
-            required_talents=["coding"], rank=QuestRank.C,
+            title="Q2",
+            description="d2",
+            required_talents=["coding"],
+            rank=QuestRank.C,
             acceptance_criteria=[],
         )
         board.post(q1)
@@ -45,13 +49,17 @@ class TestQuestBoard:
     def test_get_posted_by_talent(self) -> None:
         board = QuestBoard()
         q1 = Quest(
-            title="Q1", description="d1",
-            required_talents=["web_search"], rank=QuestRank.E,
+            title="Q1",
+            description="d1",
+            required_talents=["web_search"],
+            rank=QuestRank.E,
             acceptance_criteria=[],
         )
         q2 = Quest(
-            title="Q2", description="d2",
-            required_talents=["coding"], rank=QuestRank.C,
+            title="Q2",
+            description="d2",
+            required_talents=["coding"],
+            rank=QuestRank.C,
             acceptance_criteria=[],
         )
         board.post(q1)
@@ -64,8 +72,10 @@ class TestQuestBoard:
     def test_assign_quest(self) -> None:
         board = QuestBoard()
         quest = Quest(
-            title="Q1", description="d1",
-            required_talents=["general"], rank=QuestRank.E,
+            title="Q1",
+            description="d1",
+            required_talents=["general"],
+            rank=QuestRank.E,
             acceptance_criteria=[],
         )
         board.post(quest)
@@ -76,8 +86,10 @@ class TestQuestBoard:
     def test_remove_quest(self) -> None:
         board = QuestBoard()
         quest = Quest(
-            title="Q1", description="d1",
-            required_talents=["general"], rank=QuestRank.E,
+            title="Q1",
+            description="d1",
+            required_talents=["general"],
+            rank=QuestRank.E,
             acceptance_criteria=[],
         )
         board.post(quest)

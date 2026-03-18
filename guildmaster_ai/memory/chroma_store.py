@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import chromadb
+
+logger = logging.getLogger("guildmaster.memory.chroma")
 
 
 class ChromaStore:
@@ -16,6 +19,7 @@ class ChromaStore:
 
     async def initialize(self) -> None:
         """Create or retrieve the ChromaDB collection."""
+        logger.info("Initializing ChromaDB collection %r", self._collection_name)
         self._client = await asyncio.to_thread(chromadb.Client)
         self._collection = await asyncio.to_thread(
             self._client.get_or_create_collection,
@@ -65,11 +69,13 @@ class ChromaStore:
         distances = raw.get("distances", [[]])[0]
 
         for i, doc_id in enumerate(ids):
-            results.append({
-                "id": doc_id,
-                "document": documents[i] if i < len(documents) else "",
-                "metadata": metadatas[i] if i < len(metadatas) else {},
-                "distance": distances[i] if i < len(distances) else None,
-            })
+            results.append(
+                {
+                    "id": doc_id,
+                    "document": documents[i] if i < len(documents) else "",
+                    "metadata": metadatas[i] if i < len(metadatas) else {},
+                    "distance": distances[i] if i < len(distances) else None,
+                }
+            )
 
         return results

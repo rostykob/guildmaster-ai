@@ -81,6 +81,34 @@ class QuestObservation(BaseMessage):
     lessons_learned: list[str] = Field(default_factory=list)
 
 
+class SubtaskSpec(BaseModel):
+    """Specification for a single subtask in a quest decomposition."""
+
+    title: str
+    description: str
+    required_talents: list[str] = Field(default_factory=list)
+    acceptance_criteria: list[str] = Field(default_factory=list)
+
+
+class QuestPlan(BaseMessage):
+    """Decomposition plan for a complex quest."""
+
+    quest_id: str
+    subtasks: list[SubtaskSpec]
+    strategy: str = ""
+    prior_observations: list[str] = Field(default_factory=list)
+
+
+class PartyLeaderDecision(BaseMessage):
+    """Decision made by the party leader after evaluating subtask results."""
+
+    quest_id: str
+    decision: Literal["done", "failed", "retry"]
+    reason: str
+    retry_subtask_indices: list[int] = Field(default_factory=list)
+    combined_summary: str = ""
+
+
 class GuardMetrics(BaseModel):
     """Quantitative evaluation metrics produced by a guard."""
 

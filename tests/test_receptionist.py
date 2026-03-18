@@ -76,7 +76,8 @@ class TestReceptionist:
     async def test_identify_gaps_empty_draft(self) -> None:
         questions = Receptionist._identify_gaps(
             __import__("guildmaster_ai.core.messages", fromlist=["QuestDraft"]).QuestDraft(
-                title="X", description="X",
+                title="X",
+                description="X",
             )
         )
         # Brief description + no criteria → 2 questions (talents are Guildmaster's job)

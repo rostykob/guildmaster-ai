@@ -71,9 +71,7 @@ class TestGuardEvaluate:
     @pytest.mark.asyncio
     async def test_criteria_and_context_passed(self) -> None:
         """Ensure criteria and context are included in the user prompt."""
-        llm = MockChatModel(
-            response_content='{"verdict": "pass", "reason": "ok"}'
-        )
+        llm = MockChatModel(response_content='{"verdict": "pass", "reason": "ok"}')
         guard = Guard(llm=llm)
         verdict = await guard.evaluate(
             "Result text",
@@ -110,23 +108,17 @@ class TestGuardParseResponse:
 
     def test_warn_verdict(self) -> None:
         guard = Guard()
-        verdict = guard._parse_response(
-            '{"verdict": "warn", "reason": "Marginal"}'
-        )
+        verdict = guard._parse_response('{"verdict": "warn", "reason": "Marginal"}')
         assert verdict.verdict == "warn"
 
     def test_block_verdict(self) -> None:
         guard = Guard()
-        verdict = guard._parse_response(
-            '{"verdict": "block", "reason": "Toxic"}'
-        )
+        verdict = guard._parse_response('{"verdict": "block", "reason": "Toxic"}')
         assert verdict.verdict == "block"
 
     def test_invalid_verdict_defaults_to_pass(self) -> None:
         guard = Guard()
-        verdict = guard._parse_response(
-            '{"verdict": "unknown", "reason": "Huh"}'
-        )
+        verdict = guard._parse_response('{"verdict": "unknown", "reason": "Huh"}')
         assert verdict.verdict == "pass"
 
     def test_missing_fields_use_defaults(self) -> None:

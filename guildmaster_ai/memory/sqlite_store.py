@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import aiosqlite
 
 from guildmaster_ai.core.quest import Quest, QuestHistoryEntry, QuestRank, QuestStatus
+
+logger = logging.getLogger("guildmaster.memory.sqlite")
 
 
 class SQLiteStore:
@@ -17,6 +20,7 @@ class SQLiteStore:
 
     async def initialize(self) -> None:
         """Open the database and create tables if they don't exist."""
+        logger.info("Initializing SQLite store at %s", self._db_path)
         self._db = await aiosqlite.connect(self._db_path)
         await self._db.executescript(
             """
@@ -55,12 +59,14 @@ class SQLiteStore:
         if self._db is None:
             raise RuntimeError("Store not initialized. Call initialize() first.")
 
-        data = json.dumps({
-            "required_talents": quest.required_talents,
-            "acceptance_criteria": quest.acceptance_criteria,
-            "assigned_party_id": quest.assigned_party_id,
-            "result": quest.result,
-        })
+        data = json.dumps(
+            {
+                "required_talents": quest.required_talents,
+                "acceptance_criteria": quest.acceptance_criteria,
+                "assigned_party_id": quest.assigned_party_id,
+                "result": quest.result,
+            }
+        )
 
         await self._db.execute(
             """
@@ -142,9 +148,7 @@ class SQLiteStore:
                 quests.append(quest)
         return quests
 
-    async def save_history_entry(
-        self, quest_id: str, entry: QuestHistoryEntry
-    ) -> None:
+    async def save_history_entry(self, quest_id: str, entry: QuestHistoryEntry) -> None:
         """Save a single history entry for a quest."""
         if self._db is None:
             raise RuntimeError("Store not initialized. Call initialize() first.")
@@ -191,3 +195,4 @@ class SQLiteStore:
         if self._db is not None:
             await self._db.close()
             self._db = None
+            logger.debug("SQLite store closed")

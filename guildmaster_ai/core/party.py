@@ -13,6 +13,7 @@ class PartyMember(BaseModel):
 
     adventurer_id: str
     role: str = "member"
+    assigned_subtask_ids: list[str] = Field(default_factory=list)
 
 
 class Party(BaseModel):
@@ -25,6 +26,7 @@ class Party(BaseModel):
     quest_id: str | None = None
     formed_at: datetime = Field(default_factory=_utcnow)
     disbanded_at: datetime | None = None
+    subtask_assignments: dict[str, str] = Field(default_factory=dict)
 
     def add_member(self, adventurer_id: str, role: str = "member") -> None:
         """Add a member to the party."""
@@ -33,6 +35,14 @@ class Party(BaseModel):
     def disband(self) -> None:
         """Mark the party as disbanded."""
         self.disbanded_at = _utcnow()
+
+    def assign_subtask(self, subtask_quest_id: str, adventurer_id: str) -> None:
+        """Assign a subtask quest to an adventurer within the party."""
+        self.subtask_assignments[subtask_quest_id] = adventurer_id
+        for member in self.members:
+            if member.adventurer_id == adventurer_id:
+                member.assigned_subtask_ids.append(subtask_quest_id)
+                break
 
     @property
     def member_ids(self) -> list[str]:

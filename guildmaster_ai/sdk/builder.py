@@ -90,13 +90,9 @@ class GuildBuilder:
             if provider == "bedrock":
                 extra_kwargs.setdefault("region_name", s.aws_region)
                 if s.aws_access_key_id:
-                    extra_kwargs.setdefault(
-                        "aws_access_key_id", s.aws_access_key_id
-                    )
+                    extra_kwargs.setdefault("aws_access_key_id", s.aws_access_key_id)
                 if s.aws_secret_access_key:
-                    extra_kwargs.setdefault(
-                        "aws_secret_access_key", s.aws_secret_access_key
-                    )
+                    extra_kwargs.setdefault("aws_secret_access_key", s.aws_secret_access_key)
 
             self._llm = create_chat_model(
                 provider,

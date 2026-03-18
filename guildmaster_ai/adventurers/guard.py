@@ -104,8 +104,7 @@ class Guard(BaseGuard):
                 verdict = "pass"
 
             logger.info(
-                "Guard verdict=%s hallucination=%.2f accuracy=%.2f "
-                "relevance=%.2f toxicity=%.2f",
+                "Guard verdict=%s hallucination=%.2f accuracy=%.2f relevance=%.2f toxicity=%.2f",
                 verdict,
                 metrics.hallucination,
                 metrics.accuracy,

@@ -49,9 +49,8 @@ class BaseAdventurer:
         llm: GuildLLM | None = None,
     ) -> None:
         # Check for system_prompt — allow property to be resolved after __init__
-        has_prompt = (
-            isinstance(type(self).__dict__.get("system_prompt"), property)
-            or bool(self.system_prompt)
+        has_prompt = isinstance(type(self).__dict__.get("system_prompt"), property) or bool(
+            self.system_prompt
         )
         if not has_prompt:
             raise TypeError(
@@ -64,9 +63,7 @@ class BaseAdventurer:
         self._armor: list[BaseArmor] = []
         self._talents: list[str] = []
         self._conversation: list[BaseMessage] = []
-        self._logger = logging.getLogger(
-            f"guildmaster.adventurer.{type(self).__name__}"
-        )
+        self._logger = logging.getLogger(f"guildmaster.adventurer.{type(self).__name__}")
 
     # ── Public accessors ────────────────────────────────────────────────
 
@@ -121,9 +118,12 @@ class BaseAdventurer:
         genuinely custom execution logic.
         """
         self._logger.info("Starting quest %s: %r", quest.id[:8], quest.title)
+        # TODO: spawn a fresh adventurer instance per quest so conversation
+        # state doesn't leak across quests — makes this reset unnecessary.
         self._reset_conversation()
         self._add_user_message(quest.description)
-
+        # TODO: let the LLM signal completion via a stop keyword instead
+        # of hard-capping at _MAX_TOOL_ITERATIONS iterations.
         for iteration in range(_MAX_TOOL_ITERATIONS):
             self._logger.debug("Iteration %d/%d", iteration + 1, _MAX_TOOL_ITERATIONS)
             response = await self._call_llm()
@@ -131,7 +131,8 @@ class BaseAdventurer:
             if not response.has_tool_calls:
                 self._logger.info(
                     "Quest %s completed in %d iteration(s)",
-                    quest.id[:8], iteration + 1,
+                    quest.id[:8],
+                    iteration + 1,
                 )
                 return QuestResult(
                     sender=self.name or self.id,
@@ -152,7 +153,8 @@ class BaseAdventurer:
 
         self._logger.warning(
             "Quest %s exceeded max iterations (%d)",
-            quest.id[:8], _MAX_TOOL_ITERATIONS,
+            quest.id[:8],
+            _MAX_TOOL_ITERATIONS,
         )
         return QuestResult(
             sender=self.name or self.id,

@@ -6,8 +6,11 @@ from guildmaster_ai.adventurers.general_adventurer import GeneralAdventurer
 from guildmaster_ai.armor.base_armor import ArmorResult, BaseArmor
 from guildmaster_ai.core.exceptions import GuildmasterError
 from guildmaster_ai.core.messages import (
+    PartyLeaderDecision,
     QuestDraft,
+    QuestPlan,
     QuestResult,
+    SubtaskSpec,
 )
 from guildmaster_ai.core.quest import Quest, QuestRank, QuestStatus
 from guildmaster_ai.llm.types import GuildLLM, GuildResponse
@@ -26,10 +29,13 @@ __all__ = [
     "GuildLLM",
     "GuildResponse",
     "GuildmasterError",
+    "PartyLeaderDecision",
     "Quest",
     "QuestDraft",
+    "QuestPlan",
     "QuestRank",
     "QuestResult",
     "QuestStatus",
+    "SubtaskSpec",
 ]
 __version__ = "0.1.0"
