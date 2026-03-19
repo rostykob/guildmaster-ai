@@ -56,6 +56,7 @@ class Guild:
             max_rounds=self.settings.max_clarification_rounds,
         )
         self._guard: BaseGuard | None = None
+        self._talents_refined = False
 
         # Configure logging for the guildmaster namespace
         self._configure_logging()
@@ -129,6 +130,11 @@ class Guild:
         decomposed into subtasks and distributed across a party.
         """
         logger.info("=== New quest request: %s ===", request[:100])
+
+        # Refine adventurer talents via LLM on first quest
+        if not self._talents_refined:
+            await self._guildmaster.refine_all_talents()
+            self._talents_refined = True
 
         # Phase 1: Planning
         logger.info("Phase 1: Planning")
@@ -210,7 +216,7 @@ class Guild:
                 failure_reason="No adventurers matched the quest requirements",
             )
 
-        leader = adventurers[0]
+        leader = adventurers[0].spawn()
         leader_label = leader.name or leader.id
         logger.info("Quest leader: %s", leader_label)
         quest.transition(QuestStatus.IN_PROGRESS, leader_label)
@@ -380,20 +386,22 @@ class Guild:
                 failure_reason="no_adventurer",
             )
 
+        # Spawn a fresh instance so no state leaks between subtasks
+        runner = adventurer.spawn()
         logger.info(
             "Executing subtask %s (%r) with %s",
             subtask.id[:8],
             subtask.title,
-            adventurer.name or adventurer.id,
+            runner.name or runner.id,
         )
         # Subtask is already ASSIGNED from form_party_for_plan
-        subtask.transition(QuestStatus.IN_PROGRESS, adventurer.name or adventurer.id)
-        result = await adventurer.execute(subtask)
+        subtask.transition(QuestStatus.IN_PROGRESS, runner.name or runner.id)
+        result = await runner.execute(subtask)
 
         if result.success:
-            subtask.transition(QuestStatus.COMPLETED, adventurer.name or adventurer.id)
+            subtask.transition(QuestStatus.COMPLETED, runner.name or runner.id)
         else:
-            subtask.transition(QuestStatus.FAILED, adventurer.name or adventurer.id)
+            subtask.transition(QuestStatus.FAILED, runner.name or runner.id)
 
         self._results[subtask.id] = result
         return result

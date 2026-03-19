@@ -43,3 +43,12 @@ class InvalidQuestTransitionError(GuildmasterError):
         self.from_status = from_status
         self.to_status = to_status
         super().__init__(f"Invalid transition from {from_status!r} to {to_status!r}")
+
+
+class ArmorBlockedError(GuildmasterError):
+    """Armor blocked the input or output during quest execution."""
+
+    def __init__(self, armor_name: str, message: str) -> None:
+        self.armor_name = armor_name
+        self.message = message
+        super().__init__(f"Armor {armor_name!r} blocked: {message}")

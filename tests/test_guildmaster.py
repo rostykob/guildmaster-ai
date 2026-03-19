@@ -268,3 +268,51 @@ class TestGuildmaster:
         decision = await gm.evaluate_quest_completion(quest, results)
         assert decision.decision == "retry"
         assert 1 in decision.retry_subtask_indices
+
+    # ── LLM-based talent assessment ──────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_llm_assess_talents(self) -> None:
+        """LLM-based talent assessment returns parsed talents."""
+        mock_llm = MockChatModel(response_content='["coding", "research", "writing"]')
+        gm = Guildmaster(llm=mock_llm)
+        adv = GeneralAdventurer(llm=mock_llm)
+        talents = await gm._llm_assess_talents(adv)
+        assert "coding" in talents
+        assert "research" in talents
+        assert "writing" in talents
+
+    @pytest.mark.asyncio
+    async def test_llm_assess_talents_fallback_on_empty(self) -> None:
+        """Falls back to keyword matching when LLM returns empty result."""
+        mock_llm = MockChatModel(response_content="not valid json")
+        gm = Guildmaster(llm=mock_llm)
+        adv = GeneralAdventurer(llm=mock_llm)
+        talents = await gm._llm_assess_talents(adv)
+        # Should fall back to keyword-based — GeneralAdventurer has "general" and "versatile"
+        assert len(talents) > 0
+
+    @pytest.mark.asyncio
+    async def test_refine_all_talents(self) -> None:
+        """refine_all_talents re-assesses adventurer talents via LLM."""
+        mock_llm = MockChatModel(response_content='["coding", "general"]')
+        gm = Guildmaster(llm=mock_llm)
+        adv = GeneralAdventurer(llm=mock_llm)
+        gm.register_adventurer(adv)
+
+        await gm.refine_all_talents()
+        new_talents = adv.talents
+
+        assert "coding" in new_talents
+        assert "general" in new_talents
+
+    @pytest.mark.asyncio
+    async def test_refine_all_talents_no_llm_noop(self) -> None:
+        """refine_all_talents is a no-op when no LLM is configured."""
+        gm = Guildmaster(llm=None)
+        adv = GeneralAdventurer()
+        adv.grant_talents(["general"])
+        gm._roster[adv.id] = adv
+
+        await gm.refine_all_talents()
+        assert adv.talents == ["general"]  # unchanged

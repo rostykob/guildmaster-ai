@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import TYPE_CHECKING
 
 from guildmaster_ai.adventurers.base_adventurer import BaseAdventurer
@@ -26,20 +25,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("guildmaster.guildmaster")
 
-# Base talent keyword mapping — extended dynamically as adventurers register.
-_DEFAULT_TALENT_KEYWORDS: dict[str, list[str]] = {
-    "general": ["general", "versatile", "broad", "wide range"],
-    "reasoning": ["reason", "analyz", "logic", "think", "deduc"],
-    "coding": ["code", "program", "software", "develop", "implement"],
-    "web_search": ["search", "browse", "web", "internet", "lookup"],
-    "writing": ["write", "draft", "compose", "author", "document"],
-    "research": ["research", "investigate", "study", "explore"],
-    "math": ["math", "calcul", "comput", "arithmetic", "equation"],
-    "data_analysis": ["data", "dataset", "statistic", "csv", "tabular"],
-    "file_operations": ["file", "read", "write", "directory", "filesystem"],
-    "summarization": ["summar", "condense", "distill", "brief"],
-}
-
 
 class Guildmaster:
     """Central coordinator that manages adventurers, quests, and party formation."""
@@ -52,19 +37,17 @@ class Guildmaster:
         self._roster: dict[str, BaseAdventurer] = {}
         self._llm = llm
         self._librarian = librarian
-        self._talent_keywords = dict(_DEFAULT_TALENT_KEYWORDS)
 
     def register_adventurer(self, adventurer: BaseAdventurer) -> None:
-        """Add an adventurer to the guild roster, assessing and assigning talents."""
-        talents = self._assess_talents(adventurer)
+        """Add an adventurer to the guild roster.
+
+        Grants initial talents derived from equipped weapons and armor.
+        Full LLM-based talent assessment happens later via
+        :meth:`refine_all_talents`.
+        """
+        talents = self._derive_equipment_talents(adventurer)
         adventurer.grant_talents(talents)
         self._roster[adventurer.id] = adventurer
-
-        # Extend talent keywords with any new talents discovered
-        for talent in talents:
-            if talent not in self._talent_keywords:
-                self._talent_keywords[talent] = [talent.replace("_", " ")]
-
         logger.info(
             "Registered adventurer %r with talents %s",
             adventurer.name or adventurer.id,
@@ -81,27 +64,21 @@ class Guildmaster:
         return [adv.profile() for adv in self._roster.values()]
 
     # ── Talent assessment ──────────────────────────────────────────────
-    # TODO: replace keyword matching with LLM-based assessment using
-    # tools, skills, armor, and system prompt during guild build.
-    def _assess_talents(self, adventurer: BaseAdventurer) -> list[str]:
-        """Infer talents from the adventurer's system prompt, weapons, and armor."""
+
+    @staticmethod
+    def _derive_equipment_talents(adventurer: BaseAdventurer) -> list[str]:
+        """Derive initial talents from an adventurer's weapons and armor.
+
+        This is a lightweight, sync-safe method used at registration time.
+        Full LLM-based assessment is deferred to :meth:`refine_all_talents`.
+        """
         talents: list[str] = []
-        prompt_lower = adventurer.system_prompt.lower()
 
-        # Extract talents from system prompt via keyword matching
-        for talent, keywords in self._talent_keywords.items():
-            for kw in keywords:
-                if re.search(rf"\b{re.escape(kw)}", prompt_lower):
-                    talents.append(talent)
-                    break
-
-        # Derive talents from equipped weapons
         for weapon_name in adventurer.weapon_names:
             weapon_talent = weapon_name.lower().replace(" ", "_")
             if weapon_talent not in talents:
                 talents.append(weapon_talent)
 
-        # Derive talents from worn armor
         for armor_piece in adventurer.armor:
             armor_talent = armor_piece.name.lower().replace(" ", "_")
             if armor_talent not in talents:
@@ -113,31 +90,77 @@ class Guildmaster:
 
         return talents
 
-    async def assess_quest_talents(self, draft: QuestDraft) -> list[str]:
-        """Determine which talents a quest requires.
+    async def _llm_assess_talents(self, adventurer: BaseAdventurer) -> list[str]:
+        """Use the LLM to assess an adventurer's talents from their full profile.
 
-        Uses the LLM when available; falls back to keyword matching.
+        Analyzes the system prompt, equipped weapons (with descriptions), and
+        worn armor to determine the adventurer's capabilities.
         """
-        if self._llm is not None:
-            return await self._llm_assess_quest_talents(draft)
-        return self._keyword_assess_quest_talents(draft)
+        assert self._llm is not None
 
-    def _keyword_assess_quest_talents(self, draft: QuestDraft) -> list[str]:
-        """Determine quest talents via keyword matching against the description."""
-        desc_lower = draft.description.lower()
-        talents: list[str] = []
-        for talent, keywords in self._talent_keywords.items():
-            for kw in keywords:
-                if re.search(rf"\b{re.escape(kw)}", desc_lower):
-                    talents.append(talent)
-                    break
+        weapons_info = {
+            name: weapon.description
+            for name, weapon in adventurer.weapons.items()
+        }
+        armor_info = [a.name for a in adventurer.armor]
+        known = self._known_talents()
+
+        raw = await guild_complete(
+            self._llm,
+            system=(
+                "You are a guild master assessing an adventurer's talents. "
+                "Given their system prompt, weapons, and armor, return ONLY "
+                "a JSON array of talent strings. Prefer talents from this "
+                f"known list when applicable: {known}. "
+                "You may add new talent names if none fit. "
+                "Include at least one talent."
+            ),
+            user=(
+                f"System prompt: {adventurer.system_prompt}\n"
+                f"Weapons: {json.dumps(weapons_info)}\n"
+                f"Armor: {armor_info}"
+            ),
+        )
+
+        talents = self._parse_string_list(raw)
+        if not talents:
+            return self._derive_equipment_talents(adventurer)
         return talents
 
-    async def _llm_assess_quest_talents(self, draft: QuestDraft) -> list[str]:
-        """Use the LLM to decide which talents a quest needs."""
-        assert self._llm is not None
-        known = list(self._talent_keywords.keys())
+    async def refine_all_talents(self) -> None:
+        """Assess talents for all registered adventurers using the LLM.
 
+        Called lazily on first quest when an LLM is available. Replaces
+        the initial equipment-derived talents with richer LLM-derived ones.
+        """
+        if self._llm is None:
+            return
+
+        logger.info("Assessing adventurer talents via LLM (%d adventurers)", len(self._roster))
+        for adv in self._roster.values():
+            old_talents = adv.talents
+            new_talents = await self._llm_assess_talents(adv)
+            adv._talents.clear()
+            adv.grant_talents(new_talents)
+
+            if set(new_talents) != set(old_talents):
+                logger.debug(
+                    "Assessed %s: %s -> %s",
+                    adv.name or adv.id,
+                    old_talents,
+                    new_talents,
+                )
+
+    async def assess_quest_talents(self, draft: QuestDraft) -> list[str]:
+        """Determine which talents a quest requires using the LLM.
+
+        Returns an empty list when no LLM is configured (all adventurers
+        with the "general" talent will still match).
+        """
+        if self._llm is None:
+            return []
+
+        known = self._known_talents()
         raw = await guild_complete(
             self._llm,
             system=(
@@ -622,6 +645,13 @@ class Guildmaster:
             )
 
     # ── Helpers ────────────────────────────────────────────────────────
+
+    def _known_talents(self) -> list[str]:
+        """Collect all unique talents currently assigned across the roster."""
+        talents: set[str] = set()
+        for adv in self._roster.values():
+            talents.update(adv.talents)
+        return sorted(talents)
 
     @staticmethod
     def _parse_string_list(raw: str) -> list[str]:

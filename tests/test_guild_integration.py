@@ -163,11 +163,14 @@ class TestGuildIntegration:
                 ],
             }
         )
-        # LLM calls: 1) receptionist intake, 2) assess_quest_talents,
-        # 3) plan_quest, 4) subtask 1 exec, 5) subtask 2 exec,
-        # 6) evaluate completion, 7) verify result
+        # LLM calls: 1-2) refine_all_talents (2 adventurers),
+        # 3) receptionist intake, 4) assess_quest_talents,
+        # 5) plan_quest, 6) subtask 1 exec, 7) subtask 2 exec,
+        # 8) evaluate completion, 9) verify result
         mock_llm = MockChatModel(
             responses=[
+                '["general"]',  # refine talents for adventurer 1
+                '["general"]',  # refine talents for adventurer 2
                 '{"title": "Complex quest", "description": "Do complex things", '
                 '"acceptance_criteria": ["Done"]}',
                 '["general"]',
@@ -208,6 +211,8 @@ class TestGuildIntegration:
         )
         mock_llm = MockChatModel(
             responses=[
+                # refine talents (1 adventurer)
+                '["general"]',
                 # receptionist
                 '{"title": "Retry quest", "description": "Test retry", '
                 '"acceptance_criteria": ["Done"]}',
@@ -248,6 +253,8 @@ class TestGuildIntegration:
         """A simple quest follows the original path when plan_quest returns None."""
         mock_llm = MockChatModel(
             responses=[
+                # refine talents (1 adventurer)
+                '["general"]',
                 # receptionist
                 '{"title": "Simple quest", "description": "Just do it", '
                 '"acceptance_criteria": ["Done"]}',

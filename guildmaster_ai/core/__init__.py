@@ -1,6 +1,7 @@
 """Core domain models — no LLM logic here."""
 
 from guildmaster_ai.core.exceptions import (
+    ArmorBlockedError,
     GuildmasterError,
     InvalidQuestTransitionError,
     NoEligibleAdventurersError,
@@ -29,6 +30,7 @@ from guildmaster_ai.core.utils import parse_llm_json
 
 __all__ = [
     "AdventurerProfile",
+    "ArmorBlockedError",
     "BaseMessage",
     "GuardMetrics",
     "GuardVerdict",

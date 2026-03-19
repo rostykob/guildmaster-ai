@@ -253,6 +253,137 @@ class TestExecute:
         assert result.success is False
         assert result.failure_reason == "max_iterations_exceeded"
 
+    @pytest.mark.asyncio
+    async def test_custom_max_iterations(self) -> None:
+        """max_iterations class var controls the loop cap."""
+
+        class AlwaysToolsLLM(MockChatModel):
+            def _generate(self, *args, **kwargs):
+                self.call_count += 1
+                from langchain_core.messages import AIMessage
+                from langchain_core.outputs import ChatGeneration, ChatResult
+
+                msg = AIMessage(
+                    content="Still working...",
+                    tool_calls=[{"id": "tc1", "name": "dummy", "args": {}}],
+                )
+                return ChatResult(generations=[ChatGeneration(message=msg)])
+
+        class ShortLoopAdventurer(BaseAdventurer):
+            system_prompt = "You are a test adventurer."
+            max_iterations = 3
+
+        llm = AlwaysToolsLLM()
+        adv = ShortLoopAdventurer(llm=llm)
+        adv.equip_weapon(_DummyWeaponInput())
+        quest = _make_quest()
+        result = await adv.execute(quest)
+        assert result.success is False
+        assert llm.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_done_keyword_signals_completion(self) -> None:
+        """When the LLM emits the done_keyword, the quest completes immediately."""
+
+        class DoneKeywordAdventurer(BaseAdventurer):
+            system_prompt = "You are a test adventurer."
+            done_keyword = "[QUEST_COMPLETE]"
+
+        llm = MockChatModel(response_content="Here is the answer. [QUEST_COMPLETE]")
+        adv = DoneKeywordAdventurer(llm=llm)
+        quest = _make_quest()
+        result = await adv.execute(quest)
+        assert result.success is True
+        assert result.summary == "Here is the answer."
+        assert "[QUEST_COMPLETE]" not in result.summary
+
+    @pytest.mark.asyncio
+    async def test_done_keyword_mid_tool_loop(self) -> None:
+        """done_keyword in a response with tool calls still triggers completion."""
+        from langchain_core.messages import AIMessage as LCAIMessage
+        from langchain_core.outputs import ChatGeneration, ChatResult
+
+        class ToolThenDoneLLM(MockChatModel):
+            def _generate(self, *args, **kwargs):
+                self.call_count += 1
+                if self.call_count == 1:
+                    # First call: tool call only
+                    msg = LCAIMessage(
+                        content="Using tool...",
+                        tool_calls=[{"id": "tc1", "name": "dummy", "args": {}}],
+                    )
+                else:
+                    # Second call: done keyword with tool calls
+                    msg = LCAIMessage(
+                        content="Final answer [DONE]",
+                        tool_calls=[{"id": "tc2", "name": "dummy", "args": {}}],
+                    )
+                return ChatResult(generations=[ChatGeneration(message=msg)])
+
+        class DoneAdventurer(BaseAdventurer):
+            system_prompt = "You are a test adventurer."
+            done_keyword = "[DONE]"
+
+        llm = ToolThenDoneLLM()
+        adv = DoneAdventurer(llm=llm)
+        adv.equip_weapon(_DummyWeaponInput())
+        quest = _make_quest()
+        result = await adv.execute(quest)
+        assert result.success is True
+        assert result.summary == "Final answer"
+        assert llm.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_fail_keyword_signals_failure(self) -> None:
+        """When the LLM emits the fail_keyword, the quest fails immediately."""
+
+        class FailKeywordAdventurer(BaseAdventurer):
+            system_prompt = "You are a test adventurer."
+            fail_keyword = "[QUEST_FAILED]"
+
+        llm = MockChatModel(
+            response_content="I cannot do this. [QUEST_FAILED]"
+        )
+        adv = FailKeywordAdventurer(llm=llm)
+        quest = _make_quest()
+        result = await adv.execute(quest)
+        assert result.success is False
+        assert result.failure_reason == "fail_keyword"
+        assert result.summary == "I cannot do this."
+        assert "[QUEST_FAILED]" not in result.summary
+
+    @pytest.mark.asyncio
+    async def test_execute_no_state_leakage(self) -> None:
+        """Two sequential executions on the same adventurer don't leak state."""
+        llm = MockChatModel(response_content="Done!")
+        adv = SimpleAdventurer(llm=llm)
+        quest1 = _make_quest(title="Quest 1", description="First quest")
+        quest2 = _make_quest(title="Quest 2", description="Second quest")
+
+        result1 = await adv.execute(quest1)
+        result2 = await adv.execute(quest2)
+
+        assert result1.success is True
+        assert result2.success is True
+        # Both should succeed independently — no state carried over
+        assert result1.quest_id != result2.quest_id
+
+    @pytest.mark.asyncio
+    async def test_spawn_creates_independent_instance(self) -> None:
+        """spawn() returns a new instance with the same config but different id."""
+        llm = MockChatModel(response_content="Done!")
+        adv = SimpleAdventurer(name="Hero", llm=llm)
+        adv.equip_weapon(_DummyWeaponInput())
+        adv.grant_talents(["coding", "research"])
+
+        clone = adv.spawn()
+        assert clone.id != adv.id
+        assert clone.name == adv.name
+        assert clone.llm is adv.llm
+        assert clone.weapon_names == adv.weapon_names
+        assert clone.talents == adv.talents
+        assert isinstance(clone, SimpleAdventurer)
+
 
 # ── Armor integration ────────────────────────────────────────────────────
 
@@ -264,8 +395,10 @@ class TestArmor:
         adv = SimpleAdventurer(llm=llm)
         adv.wear_armor(_BlockingArmor(block_input=True))
         quest = _make_quest()
-        with pytest.raises(RuntimeError, match="blocked input"):
-            await adv.execute(quest)
+        result = await adv.execute(quest)
+        assert result.success is False
+        assert result.failure_reason == "armor_blocked"
+        assert "blocking_armor" in result.summary
 
     @pytest.mark.asyncio
     async def test_armor_blocks_output(self) -> None:
@@ -273,8 +406,10 @@ class TestArmor:
         adv = SimpleAdventurer(llm=llm)
         adv.wear_armor(_BlockingArmor(block_output=True))
         quest = _make_quest()
-        with pytest.raises(RuntimeError, match="blocked output"):
-            await adv.execute(quest)
+        result = await adv.execute(quest)
+        assert result.success is False
+        assert result.failure_reason == "armor_blocked"
+        assert "blocking_armor" in result.summary
 
     @pytest.mark.asyncio
     async def test_armor_modifies_content(self) -> None:
