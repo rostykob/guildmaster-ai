@@ -17,7 +17,7 @@ from guildmaster_ai.core.messages import (
 from guildmaster_ai.core.party import Party, PartyMember
 from guildmaster_ai.core.quest import Quest, QuestRank
 from guildmaster_ai.core.quest_board import QuestBoard
-from guildmaster_ai.core.utils import parse_llm_json
+from guildmaster_ai.core.utils import parse_llm_json, safe_parse_llm_json
 from guildmaster_ai.llm.types import GuildLLM, guild_complete
 
 if TYPE_CHECKING:
@@ -139,7 +139,11 @@ class Guildmaster:
         logger.info("Assessing adventurer talents via LLM (%d adventurers)", len(self._roster))
         for adv in self._roster.values():
             old_talents = adv.talents
+            had_general = "general" in old_talents
             new_talents = await self._llm_assess_talents(adv)
+            # Preserve the "general" wildcard if it was the original equipment-derived talent
+            if had_general and "general" not in new_talents:
+                new_talents.append("general")
             adv._talents.clear()
             adv.grant_talents(new_talents)
 
@@ -177,7 +181,13 @@ class Guildmaster:
     # ── Feasibility ────────────────────────────────────────────────────
 
     def check_feasibility(self, draft: QuestDraft) -> QuestFeasibilityReport:
-        """Check whether the guild can staff a quest draft."""
+        """Check whether the guild can staff a quest draft.
+
+        The "general" talent is a wildcard: an adventurer with it is eligible
+        for *any* quest regardless of required talents.  This means a guild
+        with at least one general-purpose adventurer always reports feasible=True
+        (no missing talents), even if no specialist exists.
+        """
         logger.info(
             "Checking feasibility for %r (requires: %s)",
             draft.title,
@@ -197,7 +207,8 @@ class Guildmaster:
         if not draft.required_talents:
             matched = [adv.profile() for adv in self._roster.values()]
 
-        # Only report truly missing talents if no general-purpose adventurer is available
+        # Only report truly missing talents if no general-purpose adventurer is available.
+        # A "general" adventurer can cover any gap, so missing = [] in that case.
         has_general = any("general" in set(a.talents) for a in self._roster.values())
         missing = [] if has_general else [t for t in draft.required_talents if t not in all_talents]
         feasible = len(missing) == 0 and len(matched) > 0
@@ -345,20 +356,20 @@ class Guildmaster:
             ),
         )
 
-        try:
-            data = parse_llm_json(raw)
-            accepted = bool(data.get("accepted", True))
-            reason = data.get("reason", "")
-            if not accepted:
-                logger.warning(
-                    "Quest %s failed verification: %s",
-                    quest.id[:8],
-                    reason,
-                )
-            return accepted
-        except (ValueError, KeyError):
-            logger.debug("Could not parse verification response — accepting")
+        data = safe_parse_llm_json(raw, context="verify_result")
+        if data is None:
+            logger.warning("Could not parse verification response — accepting by default")
             return result.success
+
+        accepted = bool(data.get("accepted", True))
+        reason = data.get("reason", "")
+        if not accepted:
+            logger.warning(
+                "Quest %s failed verification: %s",
+                quest.id[:8],
+                reason,
+            )
+        return accepted
 
     # ── Quest decomposition ──────────────────────────────────────────
 
@@ -399,7 +410,10 @@ class Guildmaster:
                 "If the quest is complex, respond with:\n"
                 '{"decompose": true, "strategy": "brief strategy", '
                 '"subtasks": [{"title": "...", "description": "...", '
-                '"required_talents": [...], "acceptance_criteria": [...]}]}\n'
+                '"required_talents": [...], "acceptance_criteria": [...], '
+                '"depends_on": [...]}]}\n'
+                '"depends_on" is a list of 0-based subtask indices that must '
+                "complete before this subtask can start. Use [] for independent subtasks.\n"
                 "Respond with ONLY a JSON object."
             ),
             user=(
@@ -411,39 +425,40 @@ class Guildmaster:
             ),
         )
 
-        try:
-            data = parse_llm_json(raw)
-            if not data.get("decompose", False):
-                return None
-
-            subtasks = [
-                SubtaskSpec(
-                    title=st.get("title", ""),
-                    description=st.get("description", ""),
-                    required_talents=st.get("required_talents", []),
-                    acceptance_criteria=st.get("acceptance_criteria", []),
-                )
-                for st in data.get("subtasks", [])
-            ]
-
-            if not subtasks:
-                return None
-
-            logger.info(
-                "Quest %s decomposed into %d subtasks",
-                quest.id[:8],
-                len(subtasks),
-            )
-            return QuestPlan(
-                sender="guildmaster",
-                quest_id=quest.id,
-                subtasks=subtasks,
-                strategy=data.get("strategy", ""),
-                prior_observations=prior_observations,
-            )
-        except (ValueError, KeyError):
-            logger.debug("Could not parse plan response — treating as simple quest")
+        data = safe_parse_llm_json(raw, context="plan_quest")
+        if data is None:
+            logger.warning("Could not parse plan response — treating as simple quest")
             return None
+
+        if not data.get("decompose", False):
+            return None
+
+        subtasks = [
+            SubtaskSpec(
+                title=st.get("title", ""),
+                description=st.get("description", ""),
+                required_talents=st.get("required_talents", []),
+                acceptance_criteria=st.get("acceptance_criteria", []),
+                depends_on=st.get("depends_on", []),
+            )
+            for st in data.get("subtasks", [])
+        ]
+
+        if not subtasks:
+            return None
+
+        logger.info(
+            "Quest %s decomposed into %d subtasks",
+            quest.id[:8],
+            len(subtasks),
+        )
+        return QuestPlan(
+            sender="guildmaster",
+            quest_id=quest.id,
+            subtasks=subtasks,
+            strategy=data.get("strategy", ""),
+            prior_observations=prior_observations,
+        )
 
     async def form_party_for_plan(
         self,
@@ -469,7 +484,9 @@ class Guildmaster:
             child_quests.append(child)
             board.post(child)
 
-        # Match adventurers to subtasks and build party
+        # Match adventurers to subtasks and build party.
+        # Leader selection: the adventurer with the highest talent overlap with
+        # the parent quest's required_talents becomes the party leader.
         best_leader: BaseAdventurer | None = None
         best_leader_score = -1
 
@@ -587,7 +604,11 @@ class Guildmaster:
         all_success: bool,
         failed_indices: list[int],
     ) -> PartyLeaderDecision:
-        """Use the LLM to evaluate composite quest completion."""
+        """Use the LLM to evaluate composite quest completion.
+
+        Tries LLM-based evaluation first; on parse failure, falls back to
+        rule-based logic (all-success → done, any-failed → retry/failed).
+        """
         assert self._llm is not None
 
         results_text = "\n".join(
@@ -612,8 +633,8 @@ class Guildmaster:
             ),
         )
 
-        try:
-            data = parse_llm_json(raw)
+        data = safe_parse_llm_json(raw, context="evaluate_completion")
+        if data is not None:
             decision = data.get("decision", "done")
             if decision not in ("done", "failed", "retry"):
                 decision = "done" if all_success else "failed"
@@ -625,24 +646,24 @@ class Guildmaster:
                 retry_subtask_indices=data.get("retry_subtask_indices", []),
                 combined_summary=data.get("combined_summary", ""),
             )
-        except (ValueError, KeyError):
-            # Fall back to rule-based
-            if all_success:
-                combined = "\n\n".join(r.summary for r in subtask_results)
-                return PartyLeaderDecision(
-                    sender="guildmaster",
-                    quest_id=quest.id,
-                    decision="done",
-                    reason="All subtasks completed successfully.",
-                    combined_summary=combined,
-                )
+
+        # Fall back to rule-based when LLM response couldn't be parsed
+        if all_success:
+            combined = "\n\n".join(r.summary for r in subtask_results)
             return PartyLeaderDecision(
                 sender="guildmaster",
                 quest_id=quest.id,
-                decision="retry" if failed_indices else "failed",
-                reason=f"Subtasks at indices {failed_indices} failed.",
-                retry_subtask_indices=failed_indices,
+                decision="done",
+                reason="All subtasks completed successfully.",
+                combined_summary=combined,
             )
+        return PartyLeaderDecision(
+            sender="guildmaster",
+            quest_id=quest.id,
+            decision="retry" if failed_indices else "failed",
+            reason=f"Subtasks at indices {failed_indices} failed.",
+            retry_subtask_indices=failed_indices,
+        )
 
     # ── Helpers ────────────────────────────────────────────────────────
 
@@ -662,4 +683,5 @@ class Guildmaster:
                 return [str(x) for x in data]
         except (ValueError, KeyError):
             pass
+        logger.warning("Could not parse string list from LLM: %.200s", raw)
         return []

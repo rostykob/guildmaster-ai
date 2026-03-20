@@ -8,6 +8,7 @@ from guildmaster_ai.core.exceptions import (
     QuestBoardEmptyError,
     QuestDecompositionError,
     QuestFailedError,
+    ScrollValidationError,
 )
 from guildmaster_ai.core.messages import (
     AdventurerProfile,
@@ -53,6 +54,7 @@ __all__ = [
     "QuestRank",
     "QuestResult",
     "QuestStatus",
+    "ScrollValidationError",
     "SubtaskSpec",
     "parse_llm_json",
 ]

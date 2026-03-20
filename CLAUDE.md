@@ -38,13 +38,21 @@ guildmaster_ai/
   core/           — Domain models, no LLM logic.
                     Quest, QuestBoard, Party, Messages, Exceptions.
   adventurers/    — All agent implementations.
-                    BaseAdventurer is the abstract base.
-                    Concrete: GeneralAdventurer, Guildmaster, Receptionist,
+                    BaseAdventurer is the abstract base (uses create_agent).
+                    BaseHero extends BaseAdventurer with scroll + member support
+                      (uses create_deep_agent with subagents).
+                    GeneralHero is the concrete hero for party leadership.
+                    Concrete agents: GeneralAdventurer, Guildmaster, Receptionist,
                               Librarian, Guard.
   weapons/        — Tool abstractions. BaseWeapon extends LangChain BaseTool.
                     Implementations: FileReadWeapon, WebSearchWeapon.
   armor/          — Guardrail abstractions. BaseArmor defines pre/post hooks.
                     Implementations: ContentFilterArmor, RateLimiterArmor.
+  scrolls/        — SKILL.md-based agent skills (agentskills.io spec).
+                    Scroll loads from a skill-name/SKILL.md directory.
+                    ScrollCatalog scans a directory for name-based lookup.
+                    Built-in skills in scrolls/skills/ (e.g. research).
+                    pick_scroll("name") resolves from catalog; progressive disclosure.
   memory/         — SQLiteStore for metadata, ChromaStore for embeddings.
   llm/            — LangChain chat model factory and provider wrappers.
                     types.py (GuildLLM, GuildResponse), base_provider.py (factory),
@@ -83,11 +91,22 @@ DRAFT -> POSTED -> ASSIGNED -> IN_PROGRESS -> COMPLETED -> ARCHIVED
                                            -> FAILED -> ARCHIVED
 ```
 
+## Complex Quest Execution
+
+Complex quests (multiple subtasks) support two execution paths:
+
+1. **Hero-led** (preferred): If a `BaseHero` is registered and matches the quest, it becomes party leader. Matched adventurers are recruited as subagents via `CompiledSubAgent`. The deep agent coordinates delegation via its `task` tool.
+2. **Manual party** (fallback): Without a hero, the guild distributes subtasks across adventurers manually with concurrent execution and retry logic.
+
+Simple quests always use a single adventurer regardless.
+
 ## Adding New Components
 
-- **New Adventurer**: Subclass `BaseAdventurer`, implement `talents`, `system_prompt`, `execute()`
+- **New Adventurer**: Subclass `BaseAdventurer`, implement `system_prompt`
+- **New Hero**: Subclass `BaseHero` (or `GeneralHero`), implement `system_prompt`. Use `recruit()` to add member adventurers as subagents. Heroes use `create_deep_agent` and support scrolls + members.
 - **New Weapon**: Subclass `BaseWeapon` (extends LangChain `BaseTool`), set `name`, `description`, `args_schema`, implement `execute()`
 - **New Armor**: Subclass `BaseArmor`, implement `name`, override `pre_process()` and/or `post_process()`
+- **New Scroll**: Create a directory `scrolls/<skill-name>/SKILL.md` with YAML frontmatter (`name`, `description`) and markdown instructions. Add optional `scripts/`, `references/`, `assets/` subdirectories. Load via `ScrollCatalog` and `pick_scroll("skill-name")`.
 - **New LLM Provider**: Pass any LangChain `BaseChatModel` to `GuildBuilder.with_llm_provider()`, or add a new provider to `create_chat_model()` factory
 
 

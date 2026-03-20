@@ -185,7 +185,7 @@ class TestLLMAccessor:
         assert adv.llm is mock
 
 
-# ── Execute (tool-calling loop) ─────────────────────────────────────────
+# ── Execute (agent-based) ──────────────────────────────────────────────────
 
 
 class TestExecute:
@@ -228,129 +228,6 @@ class TestExecute:
         quest = _make_quest()
         with pytest.raises(RuntimeError, match="No LLM configured"):
             await adv.execute(quest)
-
-    @pytest.mark.asyncio
-    async def test_max_iterations(self) -> None:
-        """When every call returns tool calls, should hit max iterations."""
-
-        class AlwaysToolsLLM(MockChatModel):
-            def _generate(self, *args, **kwargs):
-                self.call_count += 1
-                from langchain_core.messages import AIMessage
-                from langchain_core.outputs import ChatGeneration, ChatResult
-
-                msg = AIMessage(
-                    content="Still working...",
-                    tool_calls=[{"id": "tc1", "name": "dummy", "args": {}}],
-                )
-                return ChatResult(generations=[ChatGeneration(message=msg)])
-
-        llm = AlwaysToolsLLM()
-        adv = SimpleAdventurer(llm=llm)
-        adv.equip_weapon(_DummyWeaponInput())
-        quest = _make_quest()
-        result = await adv.execute(quest)
-        assert result.success is False
-        assert result.failure_reason == "max_iterations_exceeded"
-
-    @pytest.mark.asyncio
-    async def test_custom_max_iterations(self) -> None:
-        """max_iterations class var controls the loop cap."""
-
-        class AlwaysToolsLLM(MockChatModel):
-            def _generate(self, *args, **kwargs):
-                self.call_count += 1
-                from langchain_core.messages import AIMessage
-                from langchain_core.outputs import ChatGeneration, ChatResult
-
-                msg = AIMessage(
-                    content="Still working...",
-                    tool_calls=[{"id": "tc1", "name": "dummy", "args": {}}],
-                )
-                return ChatResult(generations=[ChatGeneration(message=msg)])
-
-        class ShortLoopAdventurer(BaseAdventurer):
-            system_prompt = "You are a test adventurer."
-            max_iterations = 3
-
-        llm = AlwaysToolsLLM()
-        adv = ShortLoopAdventurer(llm=llm)
-        adv.equip_weapon(_DummyWeaponInput())
-        quest = _make_quest()
-        result = await adv.execute(quest)
-        assert result.success is False
-        assert llm.call_count == 3
-
-    @pytest.mark.asyncio
-    async def test_done_keyword_signals_completion(self) -> None:
-        """When the LLM emits the done_keyword, the quest completes immediately."""
-
-        class DoneKeywordAdventurer(BaseAdventurer):
-            system_prompt = "You are a test adventurer."
-            done_keyword = "[QUEST_COMPLETE]"
-
-        llm = MockChatModel(response_content="Here is the answer. [QUEST_COMPLETE]")
-        adv = DoneKeywordAdventurer(llm=llm)
-        quest = _make_quest()
-        result = await adv.execute(quest)
-        assert result.success is True
-        assert result.summary == "Here is the answer."
-        assert "[QUEST_COMPLETE]" not in result.summary
-
-    @pytest.mark.asyncio
-    async def test_done_keyword_mid_tool_loop(self) -> None:
-        """done_keyword in a response with tool calls still triggers completion."""
-        from langchain_core.messages import AIMessage as LCAIMessage
-        from langchain_core.outputs import ChatGeneration, ChatResult
-
-        class ToolThenDoneLLM(MockChatModel):
-            def _generate(self, *args, **kwargs):
-                self.call_count += 1
-                if self.call_count == 1:
-                    # First call: tool call only
-                    msg = LCAIMessage(
-                        content="Using tool...",
-                        tool_calls=[{"id": "tc1", "name": "dummy", "args": {}}],
-                    )
-                else:
-                    # Second call: done keyword with tool calls
-                    msg = LCAIMessage(
-                        content="Final answer [DONE]",
-                        tool_calls=[{"id": "tc2", "name": "dummy", "args": {}}],
-                    )
-                return ChatResult(generations=[ChatGeneration(message=msg)])
-
-        class DoneAdventurer(BaseAdventurer):
-            system_prompt = "You are a test adventurer."
-            done_keyword = "[DONE]"
-
-        llm = ToolThenDoneLLM()
-        adv = DoneAdventurer(llm=llm)
-        adv.equip_weapon(_DummyWeaponInput())
-        quest = _make_quest()
-        result = await adv.execute(quest)
-        assert result.success is True
-        assert result.summary == "Final answer"
-        assert llm.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_fail_keyword_signals_failure(self) -> None:
-        """When the LLM emits the fail_keyword, the quest fails immediately."""
-
-        class FailKeywordAdventurer(BaseAdventurer):
-            system_prompt = "You are a test adventurer."
-            fail_keyword = "[QUEST_FAILED]"
-
-        llm = MockChatModel(
-            response_content="I cannot do this. [QUEST_FAILED]"
-        )
-        adv = FailKeywordAdventurer(llm=llm)
-        quest = _make_quest()
-        result = await adv.execute(quest)
-        assert result.success is False
-        assert result.failure_reason == "fail_keyword"
-        assert result.summary == "I cannot do this."
-        assert "[QUEST_FAILED]" not in result.summary
 
     @pytest.mark.asyncio
     async def test_execute_no_state_leakage(self) -> None:
@@ -420,3 +297,28 @@ class TestArmor:
         result = await adv.execute(quest)
         assert result.success is True
         assert "[reviewed]" in result.summary
+
+
+# ── _llm_complete convenience method ────────────────────────────────────
+
+
+class TestLLMComplete:
+    @pytest.mark.asyncio
+    async def test_llm_complete_returns_text(self) -> None:
+        llm = MockChatModel(response_content="Direct reply")
+        adv = SimpleAdventurer(llm=llm)
+        text = await adv._llm_complete("Hello")
+        assert text == "Direct reply"
+
+    @pytest.mark.asyncio
+    async def test_llm_complete_custom_system(self) -> None:
+        llm = MockChatModel(response_content="Custom system reply")
+        adv = SimpleAdventurer(llm=llm)
+        text = await adv._llm_complete("Hello", system="Be a pirate.")
+        assert text == "Custom system reply"
+
+    @pytest.mark.asyncio
+    async def test_llm_complete_no_llm_raises(self) -> None:
+        adv = SimpleAdventurer()
+        with pytest.raises(RuntimeError, match="No LLM configured"):
+            await adv._llm_complete("Hello")

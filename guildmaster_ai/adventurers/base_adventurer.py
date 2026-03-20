@@ -1,28 +1,25 @@
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 from uuid import uuid4
+
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, HumanMessage
 
 from guildmaster_ai.armor.base_armor import BaseArmor
 from guildmaster_ai.core.exceptions import ArmorBlockedError
 from guildmaster_ai.core.messages import AdventurerProfile, QuestResult
 from guildmaster_ai.core.quest import Quest
-from guildmaster_ai.llm.types import (
-    AIMessage,
-    BaseMessage,
-    GuildLLM,
-    GuildResponse,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from guildmaster_ai.llm.types import GuildLLM
 from guildmaster_ai.weapons.base_weapon import BaseWeapon
 
 
 class BaseAdventurer:
     """Abstract base class for all adventurer agents.
+
+    Uses weapons (tools) and armor (middleware) only.  For scroll support,
+    use :class:`DeepAdventurer` instead.
 
     Subclasses **must** provide a ``system_prompt``.  This can be either a
     plain class variable or a ``@property`` — both patterns are supported::
@@ -40,28 +37,6 @@ class BaseAdventurer:
 
     system_prompt: str = ""
     """The system prompt sent to the LLM.  Set as a class variable or property."""
-
-    max_iterations: int = 10
-    """Maximum tool-calling loop iterations before the quest is considered failed."""
-
-    done_keyword: str = ""
-    """Optional keyword the LLM can emit to signal quest completion mid-loop.
-
-    When set (e.g. ``"[QUEST_COMPLETE]"``), the execute loop checks each LLM
-    response for this keyword.  If found, the quest is considered complete
-    immediately — even if the response also contains tool calls.  The keyword
-    is stripped from the returned summary.
-
-    Leave empty (default) to rely on the standard "no tool calls" heuristic.
-    """
-
-    fail_keyword: str = ""
-    """Optional keyword the LLM can emit to signal quest failure mid-loop.
-
-    When set (e.g. ``"[QUEST_FAILED]"``), the execute loop checks each LLM
-    response for this keyword.  If found, the quest is marked as failed
-    immediately.  The keyword is stripped from the failure summary.
-    """
 
     def __init__(
         self,
@@ -148,111 +123,89 @@ class BaseAdventurer:
 
     # ── Execute ────────────────────────────────────────────────────────
 
-    async def execute(self, quest: Quest) -> QuestResult:
-        """Execute a quest using an LLM tool-calling loop.
+    def _build_agent(self) -> Any:
+        """Build a LangChain agent graph for quest execution.
 
-        The loop terminates when:
-        1. The LLM returns a response with no tool calls (normal completion).
-        2. The LLM emits :attr:`done_keyword` in its response (early exit).
-        3. The LLM emits :attr:`fail_keyword` in its response (early failure).
-        4. :attr:`max_iterations` is reached (failure).
+        Uses ``create_agent`` from ``langchain`` which creates a tool-calling
+        ReAct graph.  Weapons become LangChain tools; armor pieces are injected
+        as middleware that can intercept model calls and tool invocations.
+        """
+        if self._llm is None:
+            raise RuntimeError("No LLM configured for this adventurer.")
+
+        tools: list[BaseWeapon] = list(self._weapons.values())
+
+        return create_agent(
+            model=self._llm,
+            tools=tools or None,
+            system_prompt=self.system_prompt,
+            middleware=list(self._armor),
+            name=self.name or self.id,
+        )
+
+    def _extract_final_text(self, messages: list[Any]) -> str:
+        """Extract the final AI text content from agent output messages."""
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage) and msg.content:
+                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                return content
+        return ""
+
+    async def execute(self, quest: Quest) -> QuestResult:
+        """Execute a quest using a LangChain agent.
+
+        Builds an agent via :func:`langchain.agents.create_agent` with
+        weapons as tools and armor pieces as middleware.
         """
         self._logger.info("Starting quest %s: %r", quest.id[:8], quest.title)
 
-        conversation: list[BaseMessage] = [
-            SystemMessage(content=self.system_prompt),
-            HumanMessage(content=quest.description),
-        ]
-
-        for iteration in range(self.max_iterations):
-            self._logger.debug("Iteration %d/%d", iteration + 1, self.max_iterations)
-
-            try:
-                response = await self._call_llm(messages=conversation)
-            except ArmorBlockedError as exc:
-                self._logger.warning(
-                    "Quest %s blocked by armor %r: %s",
-                    quest.id[:8],
-                    exc.armor_name,
-                    exc.message,
-                )
-                return QuestResult(
-                    sender=self.name or self.id,
-                    quest_id=quest.id,
-                    success=False,
-                    summary=f"Blocked by armor {exc.armor_name}: {exc.message}",
-                    failure_reason="armor_blocked",
-                )
-
-            # Check for fail keyword — LLM signals it cannot complete the quest
-            if self.fail_keyword and self.fail_keyword in response.content:
-                summary = response.content.replace(self.fail_keyword, "").strip()
-                self._logger.warning(
-                    "Quest %s failed via fail keyword in %d iteration(s)",
-                    quest.id[:8],
-                    iteration + 1,
-                )
-                return QuestResult(
-                    sender=self.name or self.id,
-                    quest_id=quest.id,
-                    success=False,
-                    summary=summary,
-                    failure_reason="fail_keyword",
-                )
-
-            # Check for done keyword — LLM signals completion mid-loop
-            if self.done_keyword and self.done_keyword in response.content:
-                summary = response.content.replace(self.done_keyword, "").strip()
-                self._logger.info(
-                    "Quest %s completed via done keyword in %d iteration(s)",
-                    quest.id[:8],
-                    iteration + 1,
-                )
-                return QuestResult(
-                    sender=self.name or self.id,
-                    quest_id=quest.id,
-                    success=True,
-                    summary=summary,
-                )
-
-            if not response.has_tool_calls:
-                self._logger.info(
-                    "Quest %s completed in %d iteration(s)",
-                    quest.id[:8],
-                    iteration + 1,
-                )
-                return QuestResult(
-                    sender=self.name or self.id,
-                    quest_id=quest.id,
-                    success=True,
-                    summary=response.content,
-                )
-
-            conversation.append(
-                AIMessage(content=response.content, tool_calls=response.tool_calls)
+        agent = self._build_agent()
+        try:
+            result = await agent.ainvoke(
+                {"messages": [HumanMessage(content=quest.description)]},
+            )
+        except ArmorBlockedError as exc:
+            self._logger.warning(
+                "Quest %s blocked by armor %r: %s",
+                quest.id[:8],
+                exc.armor_name,
+                exc.message,
+            )
+            return QuestResult(
+                sender=self.name or self.id,
+                quest_id=quest.id,
+                success=False,
+                summary=f"Blocked by armor {exc.armor_name}: {exc.message}",
+                failure_reason="armor_blocked",
             )
 
-            for tool_call in response.tool_calls:
-                tool_result = await self._handle_tool_call(tool_call)
-                conversation.append(
-                    ToolMessage(
-                        content=tool_result,
-                        tool_call_id=tool_call.get("id", ""),
-                        name=tool_call.get("name", ""),
-                    )
-                )
+        summary = self._extract_final_text(result["messages"])
 
-        self._logger.warning(
-            "Quest %s exceeded max iterations (%d)",
-            quest.id[:8],
-            self.max_iterations,
-        )
+        self._logger.info("Quest %s completed", quest.id[:8])
         return QuestResult(
             sender=self.name or self.id,
             quest_id=quest.id,
-            success=False,
-            summary="Reached maximum tool call iterations without a final answer.",
-            failure_reason="max_iterations_exceeded",
+            success=True,
+            summary=summary,
+        )
+
+    # ── Convenience helpers ─────────────────────────────────────────────
+
+    async def _llm_complete(self, user_message: str, *, system: str | None = None) -> str:
+        """Direct LLM call without agent graph. For custom ``execute()`` overrides.
+
+        Sends a single system + user message pair to the LLM and returns the
+        text reply.  Does not create an agent, use tools, or track conversation
+        history.
+        """
+        if self._llm is None:
+            raise RuntimeError("No LLM configured for this adventurer.")
+        from guildmaster_ai.llm.types import guild_complete
+
+        return await guild_complete(
+            self._llm,
+            system=system or self.system_prompt,
+            user=user_message,
         )
 
     # ── Equipment ─────────────────────────────────────────────────────
@@ -275,78 +228,5 @@ class BaseAdventurer:
             talents=self.talents,
             weapons=list(self._weapons.keys()),
             armor=[a.name for a in self._armor],
+            scrolls=[],
         )
-
-    # ── LLM interaction ───────────────────────────────────────────────
-
-    async def _call_llm(
-        self,
-        messages: list[BaseMessage],
-        tools: bool = True,
-    ) -> GuildResponse:
-        """Call the LLM with the given conversation messages.
-
-        Runs armor pre-processing on the last user message before the call,
-        and armor post-processing on the response content after.
-
-        Returns a :class:`GuildResponse` — subclasses never need to work
-        with raw LangChain message types.
-        """
-        if self._llm is None:
-            raise RuntimeError("No LLM configured for this adventurer.")
-
-        self._logger.debug("%s calling LLM with %d messages", self.name or self.id, len(messages))
-
-        # Armor pre-processing on the last user message
-        for armor in self._armor:
-            for msg in reversed(messages):
-                if isinstance(msg, HumanMessage):
-                    raw = msg.content if isinstance(msg.content, str) else str(msg.content)
-                    result = await armor.pre_process(raw)
-                    if result.verdict == "block":
-                        raise ArmorBlockedError(armor.name, result.message or "Input blocked")
-                    if result.modified_content is not None:
-                        msg.content = result.modified_content
-                    break
-
-        # Bind tools if the adventurer has weapons
-        llm = self._llm
-        if tools and self._weapons:
-            llm = llm.bind_tools(list(self._weapons.values()))
-
-        ai_msg: AIMessage = await llm.ainvoke(messages)
-        guild_resp = GuildResponse.from_ai_message(ai_msg)
-        self._logger.debug(
-            "%s LLM response: %d chars, %d tool calls",
-            self.name or self.id,
-            len(guild_resp.content),
-            len(guild_resp.tool_calls),
-        )
-
-        # Armor post-processing on response content
-        for armor in self._armor:
-            result = await armor.post_process(guild_resp.content)
-            if result.verdict == "block":
-                raise ArmorBlockedError(armor.name, result.message or "Output blocked")
-            if result.modified_content is not None:
-                guild_resp.content = result.modified_content
-
-        return guild_resp
-
-    async def _handle_tool_call(self, tool_call: dict[str, Any]) -> str:
-        """Dispatch a tool call to the appropriate weapon and return the result."""
-        name = tool_call.get("name", "")
-        arguments = tool_call.get("args", {})
-
-        if isinstance(arguments, str):
-            arguments = json.loads(arguments)
-
-        weapon = self._weapons.get(name)
-        if weapon is None:
-            self._logger.warning("Unknown weapon requested: %s", name)
-            return json.dumps({"error": f"Unknown weapon: {name}"})
-
-        self._logger.info("%s using weapon %r with args %s", self.name or self.id, name, arguments)
-        result = await weapon.execute(**arguments)
-        self._logger.debug("Weapon %r result: %s", name, str(result)[:200])
-        return json.dumps(result)

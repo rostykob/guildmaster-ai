@@ -50,6 +50,8 @@ class AdventurerProfile(BaseModel):
     talents: list[str] = Field(default_factory=list)
     weapons: list[str] = Field(default_factory=list)
     armor: list[str] = Field(default_factory=list)
+    scrolls: list[str] = Field(default_factory=list)
+    members: list[str] = Field(default_factory=list)
     available: bool = True
 
 
@@ -88,6 +90,10 @@ class SubtaskSpec(BaseModel):
     description: str
     required_talents: list[str] = Field(default_factory=list)
     acceptance_criteria: list[str] = Field(default_factory=list)
+    depends_on: list[int] = Field(
+        default_factory=list,
+        description="0-based indices of prerequisite subtasks that must complete first.",
+    )
 
 
 class QuestPlan(BaseMessage):

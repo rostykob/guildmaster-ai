@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from guildmaster_ai.adventurers.base_adventurer import BaseAdventurer
 from guildmaster_ai.adventurers.base_guard import BaseGuard
+from guildmaster_ai.adventurers.base_hero import BaseHero
 from guildmaster_ai.adventurers.guard import Guard
 from guildmaster_ai.adventurers.guildmaster import Guildmaster
 from guildmaster_ai.adventurers.librarian import Librarian
@@ -19,6 +20,7 @@ from guildmaster_ai.core.party import Party
 from guildmaster_ai.core.quest import Quest, QuestStatus
 from guildmaster_ai.core.quest_board import QuestBoard
 from guildmaster_ai.llm.types import GuildLLM
+from guildmaster_ai.scrolls.catalog import ScrollCatalog
 
 logger = logging.getLogger("guildmaster.guild")
 
@@ -44,10 +46,12 @@ class Guild:
         self,
         llm: GuildLLM,
         settings: GuildSettings | None = None,
+        scroll_catalog: ScrollCatalog | None = None,
     ) -> None:
         self.id = str(uuid4())
         self.settings = settings or GuildSettings()
         self._llm = llm
+        self._scroll_catalog = scroll_catalog
         self._board = QuestBoard()
         self._librarian = Librarian(llm=llm)
         self._guildmaster = Guildmaster(llm=llm, librarian=self._librarian)
@@ -57,6 +61,11 @@ class Guild:
         )
         self._guard: BaseGuard | None = None
         self._talents_refined = False
+
+        # Cumulative counters — quests move to ARCHIVED after completion,
+        # so counting by current status always yields 0 for COMPLETED/FAILED.
+        self._completed_count = 0
+        self._failed_count = 0
 
         # Configure logging for the guildmaster namespace
         self._configure_logging()
@@ -78,9 +87,15 @@ class Guild:
             root.addHandler(handler)
 
     def register_adventurer(self, adventurer: BaseAdventurer) -> None:
-        """Register an adventurer with the guild, injecting the LLM if needed."""
+        """Register an adventurer with the guild, injecting the LLM and catalog."""
         if adventurer.llm is None:
             adventurer.llm = self._llm
+        if (
+            isinstance(adventurer, BaseHero)
+            and adventurer.scroll_catalog is None
+            and self._scroll_catalog is not None
+        ):
+            adventurer.scroll_catalog = self._scroll_catalog
         self._guildmaster.register_adventurer(adventurer)
 
     def enable_guard(self, guard: BaseGuard | None = None) -> None:
@@ -107,8 +122,8 @@ class Guild:
         return GuildInfo(
             id=self.id,
             total_quests=len(self._quests),
-            completed=self._count_by_status(QuestStatus.COMPLETED),
-            failed=self._count_by_status(QuestStatus.FAILED),
+            completed=self._completed_count,
+            failed=self._failed_count,
             in_progress=self._count_by_status(QuestStatus.IN_PROGRESS),
             archived=self._count_by_status(QuestStatus.ARCHIVED),
             adventurers=self._guildmaster.roster,
@@ -181,7 +196,13 @@ class Guild:
         if plan and len(plan.subtasks) > 1:
             quest.is_composite = True
             logger.info("Quest %s is composite — %d subtasks", quest.id[:8], len(plan.subtasks))
-            result = await self._execute_complex_quest(quest, plan)
+
+            # Use hero-led path if a BaseHero is available, else manual party
+            hero = self._find_hero_for_quest(quest)
+            if hero is not None:
+                result = await self._execute_hero_led_quest(quest, plan, hero)
+            else:
+                result = await self._execute_manual_party_quest(quest, plan)
         else:
             result = await self._execute_simple_quest(quest)
 
@@ -224,13 +245,69 @@ class Guild:
 
         return await self._verify_and_complete(quest, result)
 
-    async def _execute_complex_quest(
+    def _find_hero_for_quest(self, quest: Quest) -> BaseHero | None:
+        """Find a registered BaseHero eligible for this quest."""
+        matched = self._guildmaster.match_adventurers(quest)
+        for adv in matched:
+            if isinstance(adv, BaseHero):
+                return adv
+        return None
+
+    async def _execute_hero_led_quest(
+        self,
+        quest: Quest,
+        plan: QuestPlan,  # kept for API consistency with _execute_manual_party_quest
+        hero: BaseHero,
+    ) -> QuestResult:
+        """Hero-led execution: recruit matched adventurers as subagents.
+
+        The hero's deep agent handles delegation internally — the plan is not
+        used directly here (the hero re-decomposes via its own planning).
+        This is the preferred path when a BaseHero is available; the manual
+        party path is the fallback.
+        """
+        logger.info("Phase 2: Execution (hero-led)")
+        matched = self._guildmaster.match_adventurers(quest)
+
+        # Spawn a fresh hero and recruit matched adventurers as members
+        leader = hero.spawn()
+        for adv in matched:
+            if adv.id != hero.id:
+                leader.recruit(adv.spawn())
+
+        # Build party metadata for tracking
+        party = Party(
+            name=f"Party for {quest.title}",
+            leader_id=leader.id,
+            quest_id=quest.id,
+        )
+        for member_id in leader.members:
+            party.add_member(member_id)
+
+        quest.assigned_party_id = party.id
+        quest.transition(QuestStatus.ASSIGNED, "guildmaster", {"party_id": party.id})
+        quest.transition(
+            QuestStatus.IN_PROGRESS,
+            leader.name or leader.id,
+        )
+
+        logger.info(
+            "Hero %s leading party with %d member(s)",
+            leader.name or leader.id,
+            len(leader.members),
+        )
+
+        # The deep agent coordinates members via its subagents
+        result = await leader.execute(quest)
+        return await self._verify_and_complete(quest, result)
+
+    async def _execute_manual_party_quest(
         self,
         quest: Quest,
         plan: QuestPlan,
     ) -> QuestResult:
         """Execute a composite quest by distributing subtasks across a party."""
-        logger.info("Phase 2: Execution (complex)")
+        logger.info("Phase 2: Execution (manual party)")
         party, child_quests = await self._guildmaster.form_party_for_plan(
             quest,
             plan,
@@ -245,15 +322,13 @@ class Guild:
         quest.assigned_party_id = party.id
         quest.transition(QuestStatus.IN_PROGRESS, "guildmaster")
 
-        # Group subtasks by assigned adventurer for sequential execution
-        adventurer_tasks: dict[str, list[Quest]] = {}
-        for child in child_quests:
-            adv_id = party.subtask_assignments.get(child.id, "")
-            adventurer_tasks.setdefault(adv_id, []).append(child)
+        subtask_results = await self._run_subtasks_with_deps(
+            child_quests, plan, party,
+        )
 
-        subtask_results = await self._run_subtasks(adventurer_tasks, party)
-
-        # Evaluate completion
+        # Retry loop: evaluate subtask results, retry failed subtasks up to
+        # max_retries times. Each iteration re-evaluates the full result set
+        # (including updated retries) to decide done/retry/failed.
         max_retries = self.settings.max_quest_retries
         for attempt in range(max_retries):
             decision = await self._guildmaster.evaluate_quest_completion(
@@ -274,6 +349,7 @@ class Guild:
 
             if decision.decision == "failed" or attempt == max_retries - 1:
                 quest.transition(QuestStatus.FAILED, "guildmaster")
+                self._failed_count += 1
                 return QuestResult(
                     sender="guild",
                     quest_id=quest.id,
@@ -327,16 +403,104 @@ class Guild:
             failure_reason="max_retries_exceeded",
         )
 
+    async def _run_subtasks_with_deps(
+        self,
+        child_quests: list[Quest],
+        plan: QuestPlan,
+        party: Party,
+    ) -> list[QuestResult]:
+        """Run subtasks respecting ``depends_on`` constraints.
+
+        Executes in waves: each wave contains all subtasks whose dependencies
+        have already completed.  Tasks within a wave run concurrently.
+        """
+        n = len(child_quests)
+        deps: list[set[int]] = [
+            set(plan.subtasks[i].depends_on) if i < len(plan.subtasks) else set()
+            for i in range(n)
+        ]
+
+        results: list[QuestResult | None] = [None] * n
+        completed: set[int] = set()
+        failed: set[int] = set()
+
+        while len(completed) + len(failed) < n:
+            # Find the next wave: tasks not yet done whose deps are all completed
+            wave = [
+                i
+                for i in range(n)
+                if i not in completed
+                and i not in failed
+                and deps[i].issubset(completed)
+            ]
+
+            if not wave:
+                # Deadlock: remaining tasks depend on failed tasks
+                for i in range(n):
+                    if i not in completed and i not in failed:
+                        failed.add(i)
+                        # Transition through IN_PROGRESS to reach FAILED
+                        if child_quests[i].status == QuestStatus.ASSIGNED:
+                            child_quests[i].transition(QuestStatus.IN_PROGRESS, "guild")
+                        child_quests[i].transition(QuestStatus.FAILED, "guild")
+                        results[i] = QuestResult(
+                            sender="guild",
+                            quest_id=child_quests[i].id,
+                            success=False,
+                            summary="Blocked by failed dependency.",
+                            failure_reason="dependency_failed",
+                        )
+                break
+
+            logger.info(
+                "Running wave of %d subtask(s): %s",
+                len(wave),
+                [child_quests[i].title for i in wave],
+            )
+
+            async def _exec(idx: int) -> tuple[int, QuestResult]:
+                adv_id = party.subtask_assignments.get(child_quests[idx].id, "")
+                adventurer = self._guildmaster._roster.get(adv_id)
+                return idx, await self._execute_subtask(child_quests[idx], adventurer)
+
+            wave_results = await asyncio.gather(*[_exec(i) for i in wave])
+
+            for idx, result in wave_results:
+                results[idx] = result
+                if result.success:
+                    completed.add(idx)
+                else:
+                    failed.add(idx)
+
+        # Return results in original order (None slots shouldn't exist but guard)
+        return [
+            r
+            if r is not None
+            else QuestResult(
+                sender="guild",
+                quest_id=child_quests[i].id,
+                success=False,
+                summary="Subtask not executed.",
+                failure_reason="not_executed",
+            )
+            for i, r in enumerate(results)
+        ]
+
     async def _run_subtasks(
         self,
         adventurer_tasks: dict[str, list[Quest]],
-        _party: Party,
+        _party: Party,  # reserved for future per-party tracking
     ) -> list[QuestResult]:
         """Run subtasks grouped by adventurer.
 
-        Different adventurers run concurrently via ``asyncio.gather``;
-        subtasks assigned to the *same* adventurer run sequentially
-        to avoid concurrent conversation state corruption.
+        Concurrency model:
+        - Different adventurers run **concurrently** via ``asyncio.gather``
+          (they have independent state and LLM conversations).
+        - Subtasks assigned to the **same** adventurer run **sequentially**
+          to avoid concurrent conversation state corruption.
+
+        Results are flattened and re-sorted by ``subtask_index`` so the
+        caller always sees them in the original plan order.
         """
         total = sum(len(t) for t in adventurer_tasks.values())
         logger.debug(
@@ -377,6 +541,7 @@ class Guild:
     ) -> QuestResult:
         """Execute a single subtask quest through an adventurer."""
         if adventurer is None:
+            subtask.transition(QuestStatus.IN_PROGRESS, "guild")
             subtask.transition(QuestStatus.FAILED, "guild")
             return QuestResult(
                 sender="guild",
@@ -427,6 +592,7 @@ class Guild:
             )
             if verdict.verdict == "block":
                 quest.transition(QuestStatus.FAILED, "guard", {"reason": verdict.reason})
+                self._failed_count += 1
                 result.success = False
                 result.failure_reason = f"Blocked by guard: {verdict.reason}"
                 return result
@@ -436,9 +602,13 @@ class Guild:
         accepted = await self._guildmaster.verify_result(quest, result)
         if accepted:
             quest.transition(QuestStatus.COMPLETED, "guildmaster")
+            self._completed_count += 1
             logger.info("Quest %s completed successfully", quest.id[:8])
         else:
             quest.transition(QuestStatus.FAILED, "guildmaster", {"reason": "Verification failed"})
+            self._failed_count += 1
+            result.success = False
+            result.failure_reason = "Guildmaster verification failed"
             logger.warning("Quest %s failed verification", quest.id[:8])
 
         return result

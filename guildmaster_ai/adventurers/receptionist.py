@@ -4,7 +4,7 @@ import logging
 from collections.abc import Awaitable, Callable
 
 from guildmaster_ai.core.messages import QuestDraft, QuestResult
-from guildmaster_ai.core.utils import parse_llm_json
+from guildmaster_ai.core.utils import safe_parse_llm_json
 from guildmaster_ai.llm.types import GuildLLM, guild_complete
 
 logger = logging.getLogger("guildmaster.receptionist")
@@ -109,15 +109,14 @@ class Receptionist:
     @staticmethod
     def _parse_draft_response(response_content: str, fallback_text: str) -> QuestDraft:
         """Try to parse LLM JSON into a QuestDraft, falling back gracefully."""
-        try:
-            data = parse_llm_json(response_content)
+        data = safe_parse_llm_json(response_content, context="draft_response")
+        if data is not None:
             return QuestDraft(
                 title=data.get("title", fallback_text[:80]),
                 description=data.get("description", fallback_text),
                 acceptance_criteria=data.get("acceptance_criteria", []),
             )
-        except (ValueError, KeyError):
-            return QuestDraft(title=fallback_text[:80], description=fallback_text)
+        return QuestDraft(title=fallback_text[:80], description=fallback_text)
 
     @staticmethod
     def _identify_gaps(draft: QuestDraft) -> list[str]:

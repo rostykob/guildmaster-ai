@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+import logging
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -9,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from guildmaster_ai.core.exceptions import InvalidQuestTransitionError
 from guildmaster_ai.core.utils import _utcnow
+
+logger = logging.getLogger("guildmaster.quest")
 
 
 class QuestRank(enum.IntEnum):
@@ -90,6 +93,13 @@ class Quest(BaseModel):
         old_status = self.status
         self.status = new_status
         self.updated_at = _utcnow()
+        logger.info(
+            "Quest %s: %s -> %s (actor=%s)",
+            self.id[:8],
+            old_status.value,
+            new_status.value,
+            actor,
+        )
         self.add_history(
             actor=actor,
             event_type="transition",

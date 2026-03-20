@@ -5,7 +5,7 @@ from typing import Any
 
 from guildmaster_ai.core.messages import QuestObservation, QuestResult
 from guildmaster_ai.core.quest import Quest
-from guildmaster_ai.core.utils import parse_llm_json
+from guildmaster_ai.core.utils import safe_parse_llm_json
 from guildmaster_ai.llm.types import GuildLLM, guild_complete
 from guildmaster_ai.memory.chroma_store import ChromaStore
 
@@ -269,8 +269,8 @@ class Librarian:
         result: QuestResult,
     ) -> QuestObservation:
         """Parse LLM response into a QuestObservation, falling back to rules."""
-        try:
-            data = parse_llm_json(response_content)
+        data = safe_parse_llm_json(response_content, context="observation_response")
+        if data is not None:
             return QuestObservation(
                 sender="librarian",
                 quest_id=quest.id,
@@ -278,8 +278,7 @@ class Librarian:
                 tags=data.get("tags", []),
                 lessons_learned=data.get("lessons_learned", []),
             )
-        except (ValueError, KeyError):
-            return self._rule_based_analyze(quest, result)
+        return self._rule_based_analyze(quest, result)
 
     async def _store_observation(self, obs: QuestObservation) -> None:
         """Persist an observation to the vector store."""

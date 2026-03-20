@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from guildmaster_ai.adventurers.base_adventurer import BaseAdventurer
 from guildmaster_ai.adventurers.base_guard import BaseGuard
 from guildmaster_ai.config.settings import GuildSettings
 from guildmaster_ai.llm.base_provider import create_chat_model
 from guildmaster_ai.llm.types import GuildLLM
+from guildmaster_ai.scrolls.catalog import ScrollCatalog
 from guildmaster_ai.sdk.guild import Guild
 
 
@@ -36,6 +39,7 @@ class GuildBuilder:
         self._adventurers: list[tuple[type[BaseAdventurer] | BaseAdventurer, int]] = []
         self._settings = GuildSettings()
         self._guard: BaseGuard | bool = False
+        self._scroll_catalog: ScrollCatalog | None = None
 
     def _resolve_api_key(self, provider: str, api_key: str | None) -> str:
         """Return the API key for *provider*, falling back to settings."""
@@ -125,6 +129,15 @@ class GuildBuilder:
         self._guard = guard if guard is not None else True
         return self
 
+    def with_scrolls_dir(self, path: str | Path) -> GuildBuilder:
+        """Set the directory containing scroll (skill) packages.
+
+        Each subdirectory with a ``SKILL.md`` file is available as a scroll
+        that adventurers can pick by name via ``pick_scroll("skill-name")``.
+        """
+        self._scroll_catalog = ScrollCatalog(Path(path))
+        return self
+
     def with_settings(self, **kwargs: object) -> GuildBuilder:
         """Override individual settings by keyword argument."""
         for key, value in kwargs.items():
@@ -137,7 +150,11 @@ class GuildBuilder:
         if self._llm is None:
             raise ValueError("LLM provider is required. Call with_llm_provider() first.")
 
-        guild = Guild(llm=self._llm, settings=self._settings)
+        guild = Guild(
+            llm=self._llm,
+            settings=self._settings,
+            scroll_catalog=self._scroll_catalog,
+        )
 
         for adventurer_or_cls, count in self._adventurers:
             for _i in range(count):

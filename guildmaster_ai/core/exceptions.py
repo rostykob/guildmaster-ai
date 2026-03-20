@@ -52,3 +52,7 @@ class ArmorBlockedError(GuildmasterError):
         self.armor_name = armor_name
         self.message = message
         super().__init__(f"Armor {armor_name!r} blocked: {message}")
+
+
+class ScrollValidationError(GuildmasterError):
+    """A scroll failed validation."""

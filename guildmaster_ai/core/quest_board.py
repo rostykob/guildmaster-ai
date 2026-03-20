@@ -54,6 +54,11 @@ class QuestBoard:
                 raise QuestBoardEmptyError from err
             raise KeyError(f"Quest {quest_id!r} not found on the board") from err
 
+    @property
+    def quests(self) -> list[Quest]:
+        """Return all quests currently on the board."""
+        return list(self._quests.values())
+
     def remove(self, quest_id: str) -> Quest:
         """Remove and return a quest from the board."""
         try:
