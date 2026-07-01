@@ -209,3 +209,7 @@ __marimo__/
 
 plan.md
 uv.lock
+# Guild runtime storage
+.guildmaster/
+.omc/
+.claude/

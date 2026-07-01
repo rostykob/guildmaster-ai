@@ -20,6 +20,7 @@ from guildmaster_ai.core.party import Party
 from guildmaster_ai.core.quest import Quest, QuestStatus
 from guildmaster_ai.core.quest_board import QuestBoard
 from guildmaster_ai.llm.types import GuildLLM
+from guildmaster_ai.memory.sqlite_store import SQLiteStore
 from guildmaster_ai.scrolls.catalog import ScrollCatalog
 
 logger = logging.getLogger("guildmaster.guild")
@@ -66,6 +67,11 @@ class Guild:
         # so counting by current status always yields 0 for COMPLETED/FAILED.
         self._completed_count = 0
         self._failed_count = 0
+
+        # Persistent storage
+        self.settings.guild_home.mkdir(parents=True, exist_ok=True)
+        self._store = SQLiteStore(db_path=str(self.settings.db_path))
+        self._store_initialized = False
 
         # Configure logging for the guildmaster namespace
         self._configure_logging()
@@ -148,7 +154,12 @@ class Guild:
 
         # Refine adventurer talents via LLM on first quest
         if not self._talents_refined:
-            await self._guildmaster.refine_all_talents()
+            await self._ensure_store()
+            await self._restore_guild_counters()
+            restored = await self._restore_talents_if_unchanged()
+            if not restored:
+                await self._guildmaster.refine_all_talents()
+                await self._persist_talents()
             self._talents_refined = True
 
         # Phase 1: Planning
@@ -188,6 +199,9 @@ class Guild:
         self._quests[quest.id] = quest
         logger.info("Quest created: %s (%r)", quest.id[:8], quest.title)
 
+        # Persist quest to DB
+        await self._store.save_quest(quest)
+
         # Post to board
         self._board.post(quest)
 
@@ -212,6 +226,12 @@ class Guild:
         quest.transition(QuestStatus.ARCHIVED, "librarian")
 
         self._results[quest.id] = result
+
+        # Persist final state
+        await self._store.save_quest(quest)
+        await self._persist_result(quest.id, result)
+        await self._persist_guild_counters()
+
         logger.info("=== Quest %s finished: success=%s ===", quest.id[:8], result.success)
         return result
 
@@ -241,7 +261,7 @@ class Guild:
         leader_label = leader.name or leader.id
         logger.info("Quest leader: %s", leader_label)
         quest.transition(QuestStatus.IN_PROGRESS, leader_label)
-        result = await leader.execute(quest)
+        result = await self._run_and_capture(leader, quest)
 
         return await self._verify_and_complete(quest, result)
 
@@ -298,7 +318,7 @@ class Guild:
         )
 
         # The deep agent coordinates members via its subagents
-        result = await leader.execute(quest)
+        result = await self._run_and_capture(leader, quest)
         return await self._verify_and_complete(quest, result)
 
     async def _execute_manual_party_quest(
@@ -325,6 +345,7 @@ class Guild:
         subtask_results = await self._run_subtasks_with_deps(
             child_quests, plan, party,
         )
+        await self._persist_subtask_findings(quest.id, 0, subtask_results)
 
         # Retry loop: evaluate subtask results, retry failed subtasks up to
         # max_retries times. Each iteration re-evaluates the full result set
@@ -335,6 +356,18 @@ class Guild:
                 quest,
                 subtask_results,
             )
+            if self._store_initialized:
+                await self._store.save_finding(
+                    quest.id,
+                    attempt,
+                    "leader_decision",
+                    decision.reason,
+                    {
+                        "decision": decision.decision,
+                        "retry_subtask_indices": decision.retry_subtask_indices,
+                        "combined_summary": decision.combined_summary,
+                    },
+                )
 
             if decision.decision == "done":
                 result = QuestResult(
@@ -384,6 +417,7 @@ class Guild:
                     retry_tasks.setdefault(adv_id, []).append(child)
 
             retry_results = await self._run_subtasks(retry_tasks, party)
+            await self._persist_subtask_findings(quest.id, attempt + 1, retry_results)
             # Update subtask results with retry results
             for idx, new_result in zip(
                 decision.retry_subtask_indices,
@@ -561,7 +595,7 @@ class Guild:
         )
         # Subtask is already ASSIGNED from form_party_for_plan
         subtask.transition(QuestStatus.IN_PROGRESS, runner.name or runner.id)
-        result = await runner.execute(subtask)
+        result = await self._run_and_capture(runner, subtask)
 
         if result.success:
             subtask.transition(QuestStatus.COMPLETED, runner.name or runner.id)
@@ -648,6 +682,134 @@ class Guild:
     def roster(self) -> list[AdventurerProfile]:
         """List registered adventurer profiles."""
         return self._guildmaster.roster
+
+    # ── Persistent storage ────────────────────────────────────────────
+
+    async def _ensure_store(self) -> None:
+        """Lazily initialize the SQLite store on first use."""
+        if not self._store_initialized:
+            await self._store.initialize()
+            self._store_initialized = True
+
+    async def _restore_talents_if_unchanged(self) -> bool:
+        """Try to restore talents from DB if all adventurer configs match."""
+        for adv in self._guildmaster._roster.values():
+            cached = await self._store.get_adventurer_talents(adv.config_hash)
+            if cached is None:
+                return False
+
+        # All matched — restore talents
+        for adv in self._guildmaster._roster.values():
+            cached = await self._store.get_adventurer_talents(adv.config_hash)
+            if cached is not None:
+                adv._talents.clear()
+                adv.grant_talents(cached)
+                logger.debug(
+                    "Restored talents for %s from DB: %s",
+                    adv.name or adv.id,
+                    cached,
+                )
+        logger.info("Restored talents from DB — skipping LLM assessment")
+        return True
+
+    async def _persist_talents(self) -> None:
+        """Save current adventurer talents to the DB."""
+        for adv in self._guildmaster._roster.values():
+            await self._store.save_adventurer_talents(
+                adv.config_hash,
+                type(adv).__name__,
+                adv.talents,
+            )
+
+    async def _run_and_capture(
+        self,
+        runner: BaseAdventurer,
+        quest: Quest,
+    ) -> QuestResult:
+        """Execute *quest* with *runner* and persist its conversation transcript.
+
+        Centralises adventurer execution so every quest — simple, hero-led, or
+        subtask — records its message transcript to memory.
+        """
+        result = await runner.execute(quest)
+        if self._store_initialized and result.transcript:
+            await self._store.save_conversation(
+                quest.id,
+                runner.name or runner.id,
+                result.transcript,
+            )
+        return result
+
+    async def _persist_subtask_findings(
+        self,
+        quest_id: str,
+        iteration: int,
+        results: list[QuestResult],
+    ) -> None:
+        """Record each subtask outcome for *quest_id* at *iteration*."""
+        if not self._store_initialized:
+            return
+        for r in results:
+            await self._store.save_finding(
+                quest_id,
+                iteration,
+                "subtask_result",
+                r.summary,
+                {
+                    "subtask_quest_id": r.quest_id,
+                    "success": r.success,
+                    "failure_reason": r.failure_reason,
+                },
+            )
+
+    async def _persist_result(self, quest_id: str, result: QuestResult) -> None:
+        """Persist a quest result to the DB."""
+        await self._store.save_result(
+            quest_id,
+            {
+                "success": result.success,
+                "summary": result.summary,
+                "data": result.data,
+                "failure_reason": result.failure_reason,
+            },
+        )
+
+    async def _persist_guild_counters(self) -> None:
+        """Save cumulative counters to guild_state."""
+        await self._store.save_guild_state(
+            "completed_count", str(self._completed_count)
+        )
+        await self._store.save_guild_state(
+            "failed_count", str(self._failed_count)
+        )
+        await self._store.save_guild_state("guild_id", self.id)
+
+    async def _restore_guild_counters(self) -> None:
+        """Restore cumulative counters from guild_state if available."""
+        guild_id = await self._store.get_guild_state("guild_id")
+        if guild_id:
+            self.id = guild_id
+        completed = await self._store.get_guild_state("completed_count")
+        if completed is not None:
+            self._completed_count = int(completed)
+        failed = await self._store.get_guild_state("failed_count")
+        if failed is not None:
+            self._failed_count = int(failed)
+
+    # ── Lifecycle ──────────────────────────────────────────────────────
+
+    async def close(self) -> None:
+        """Close the persistent store and release resources."""
+        if self._store_initialized:
+            await self._store.close()
+            self._store_initialized = False
+            logger.debug("Guild store closed")
+
+    async def __aenter__(self) -> Guild:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.close()
 
     def __repr__(self) -> str:
         i = self.info

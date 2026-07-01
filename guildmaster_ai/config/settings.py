@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -79,7 +81,15 @@ class GuildSettings(BaseSettings):
     )
 
     # ── Storage ──────────────────────────────────────────────────────────
-    db_path: str = "guildmaster.db"
+    guild_home: Path = Path("./.guildmaster")
+
+    @property
+    def db_path(self) -> Path:
+        return self.guild_home / "guild.db"
+
+    @property
+    def chroma_path(self) -> Path:
+        return self.guild_home / "chroma"
 
     # ── Quest behaviour ──────────────────────────────────────────────────
     max_clarification_rounds: int = 3

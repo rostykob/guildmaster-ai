@@ -72,6 +72,10 @@ class QuestResult(BaseMessage):
     summary: str
     data: dict[str, Any] = Field(default_factory=dict)
     failure_reason: str | None = None
+    # Full agent message transcript, captured by the executing adventurer.
+    # Excluded from inter-agent serialization (it is persisted separately by
+    # the guild); carried here only to hand the conversation to the store.
+    transcript: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
 
 
 class QuestObservation(BaseMessage):

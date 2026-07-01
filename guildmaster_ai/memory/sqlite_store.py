@@ -7,6 +7,7 @@ from typing import Any
 import aiosqlite
 
 from guildmaster_ai.core.quest import Quest, QuestHistoryEntry, QuestRank, QuestStatus
+from guildmaster_ai.core.utils import _utcnow
 
 logger = logging.getLogger("guildmaster.memory.sqlite")
 
@@ -50,6 +51,50 @@ class SQLiteStore:
                 name TEXT NOT NULL,
                 talents TEXT NOT NULL DEFAULT '[]'
             );
+
+            CREATE TABLE IF NOT EXISTS guild_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS adventurer_talents (
+                config_hash TEXT PRIMARY KEY,
+                class_name TEXT NOT NULL,
+                talents TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS quest_results (
+                quest_id TEXT PRIMARY KEY,
+                success INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                data TEXT NOT NULL DEFAULT '{}',
+                failure_reason TEXT,
+                FOREIGN KEY (quest_id) REFERENCES quests(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS quest_conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                quest_id TEXT NOT NULL,
+                adventurer TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                FOREIGN KEY (quest_id) REFERENCES quests(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS quest_findings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                quest_id TEXT NOT NULL,
+                iteration INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                data TEXT NOT NULL DEFAULT '{}',
+                timestamp TEXT NOT NULL,
+                FOREIGN KEY (quest_id) REFERENCES quests(id)
+            );
             """
         )
         await self._db.commit()
@@ -91,6 +136,26 @@ class SQLiteStore:
                 quest.updated_at.isoformat(),
             ),
         )
+        # Sync the audit trail (stage transitions + events). History is
+        # append-only in memory; mirror the full trail so the DB always
+        # reflects the current stage and how the quest reached it.
+        await self._db.execute(
+            "DELETE FROM quest_history WHERE quest_id = ?", (quest.id,)
+        )
+        for entry in quest.history:
+            await self._db.execute(
+                """
+                INSERT INTO quest_history (quest_id, actor, event_type, payload, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    quest.id,
+                    entry.actor,
+                    entry.event_type,
+                    json.dumps(entry.payload),
+                    entry.timestamp.isoformat(),
+                ),
+            )
         await self._db.commit()
 
     async def get_quest(self, quest_id: str) -> Quest | None:
@@ -187,6 +252,244 @@ class SQLiteStore:
                 payload=json.loads(row[2]),
                 timestamp=row[3],
             )
+            for row in rows
+        ]
+
+    # ── Guild state ─────────────────────────────────────────────────────
+
+    async def save_guild_state(self, key: str, value: str) -> None:
+        """Save a key-value pair to the guild state table."""
+        if self._db is None:
+            raise RuntimeError("Store not initialized. Call initialize() first.")
+
+        now = _utcnow().isoformat()
+        await self._db.execute(
+            """
+            INSERT INTO guild_state (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (key, value, now),
+        )
+        await self._db.commit()
+
+    async def get_guild_state(self, key: str) -> str | None:
+        """Retrieve a guild state value by key."""
+        if self._db is None:
+            raise RuntimeError("Store not initialized. Call initialize() first.")
+
+        async with self._db.execute(
+            "SELECT value FROM guild_state WHERE key = ?", (key,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row[0] if row else None
+
+    # ── Adventurer talents ───────────────────────────────────────────────
+
+    async def save_adventurer_talents(
+        self, config_hash: str, class_name: str, talents: list[str]
+    ) -> None:
+        """Persist adventurer talents keyed by config hash."""
+        if self._db is None:
+            raise RuntimeError("Store not initialized. Call initialize() first.")
+
+        now = _utcnow().isoformat()
+        await self._db.execute(
+            """
+            INSERT INTO adventurer_talents (config_hash, class_name, talents, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(config_hash) DO UPDATE SET
+                class_name = excluded.class_name,
+                talents = excluded.talents,
+                updated_at = excluded.updated_at
+            """,
+            (config_hash, class_name, json.dumps(talents), now),
+        )
+        await self._db.commit()
+
+    async def get_adventurer_talents(self, config_hash: str) -> list[str] | None:
+        """Retrieve cached talents by config hash, or None if not found."""
+        if self._db is None:
+            raise RuntimeError("Store not initialized. Call initialize() first.")
+
+        async with self._db.execute(
+            "SELECT talents FROM adventurer_talents WHERE config_hash = ?",
+            (config_hash,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0])
+
+    # ── Quest results ────────────────────────────────────────────────────
+
+    async def save_result(self, quest_id: str, result: dict[str, Any]) -> None:
+        """Persist a quest result."""
+        if self._db is None:
+            raise RuntimeError("Store not initialized. Call initialize() first.")
+
+        await self._db.execute(
+            """
+            INSERT INTO quest_results (quest_id, success, summary, data, failure_reason)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(quest_id) DO UPDATE SET
+                success = excluded.success,
+                summary = excluded.summary,
+                data = excluded.data,
+                failure_reason = excluded.failure_reason
+            """,
+            (
+                quest_id,
+                int(result.get("success", False)),
+                result.get("summary", ""),
+                json.dumps(result.get("data", {})),
+                result.get("failure_reason"),
+            ),
+        )
+        await self._db.commit()
+
+    async def get_result(self, quest_id: str) -> dict[str, Any] | None:
+        """Retrieve a persisted quest result."""
+        if self._db is None:
+            raise RuntimeError("Store not initialized. Call initialize() first.")
+
+        async with self._db.execute(
+            "SELECT success, summary, data, failure_reason FROM quest_results WHERE quest_id = ?",
+            (quest_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "success": bool(row[0]),
+            "summary": row[1],
+            "data": json.loads(row[2]),
+            "failure_reason": row[3],
+        }
+
+    # ── Conversations ────────────────────────────────────────────────────
+
+    async def save_conversation(
+        self,
+        quest_id: str,
+        adventurer: str,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        """Append an adventurer's message transcript for a quest.
+
+        Each *message* is a ``{"role": ..., "content": ...}`` dict. Transcripts
+        are append-only: a subtask retry records a fresh conversation rather
+        than overwriting the earlier attempt.
+        """
+        if self._db is None:
+            raise RuntimeError("Store not initialized. Call initialize() first.")
+        if not messages:
+            return
+
+        now = _utcnow().isoformat()
+        await self._db.executemany(
+            """
+            INSERT INTO quest_conversations
+                (quest_id, adventurer, seq, role, content, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    quest_id,
+                    adventurer,
+                    seq,
+                    msg.get("role", "unknown"),
+                    msg.get("content", ""),
+                    now,
+                )
+                for seq, msg in enumerate(messages)
+            ],
+        )
+        await self._db.commit()
+
+    async def get_conversation(self, quest_id: str) -> list[dict[str, Any]]:
+        """Retrieve the full conversation transcript for a quest, in order."""
+        if self._db is None:
+            raise RuntimeError("Store not initialized. Call initialize() first.")
+
+        async with self._db.execute(
+            "SELECT adventurer, seq, role, content, timestamp"
+            " FROM quest_conversations WHERE quest_id = ?"
+            " ORDER BY id, seq",
+            (quest_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        return [
+            {
+                "adventurer": row[0],
+                "seq": row[1],
+                "role": row[2],
+                "content": row[3],
+                "timestamp": row[4],
+            }
+            for row in rows
+        ]
+
+    # ── Findings ─────────────────────────────────────────────────────────
+
+    async def save_finding(
+        self,
+        quest_id: str,
+        iteration: int,
+        kind: str,
+        summary: str,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        """Record an intermediate finding for a quest.
+
+        Findings capture per-iteration progress — individual subtask outcomes
+        and party-leader decisions across retry rounds — so a quest's reasoning
+        trail survives beyond the final :class:`QuestResult`.
+        """
+        if self._db is None:
+            raise RuntimeError("Store not initialized. Call initialize() first.")
+
+        await self._db.execute(
+            """
+            INSERT INTO quest_findings
+                (quest_id, iteration, kind, summary, data, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                quest_id,
+                iteration,
+                kind,
+                summary,
+                json.dumps(data or {}),
+                _utcnow().isoformat(),
+            ),
+        )
+        await self._db.commit()
+
+    async def get_findings(self, quest_id: str) -> list[dict[str, Any]]:
+        """Retrieve all findings for a quest, ordered by iteration."""
+        if self._db is None:
+            raise RuntimeError("Store not initialized. Call initialize() first.")
+
+        async with self._db.execute(
+            "SELECT iteration, kind, summary, data, timestamp"
+            " FROM quest_findings WHERE quest_id = ?"
+            " ORDER BY iteration, id",
+            (quest_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        return [
+            {
+                "iteration": row[0],
+                "kind": row[1],
+                "summary": row[2],
+                "data": json.loads(row[3]),
+                "timestamp": row[4],
+            }
             for row in rows
         ]
 

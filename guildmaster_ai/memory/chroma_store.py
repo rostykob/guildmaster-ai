@@ -12,15 +12,27 @@ logger = logging.getLogger("guildmaster.memory.chroma")
 class ChromaStore:
     """ChromaDB vector store for guild knowledge retrieval."""
 
-    def __init__(self, collection_name: str = "guild_knowledge") -> None:
+    def __init__(
+        self,
+        collection_name: str = "guild_knowledge",
+        persist_directory: str | None = None,
+    ) -> None:
         self._collection_name = collection_name
+        self._persist_directory = persist_directory
         self._client: chromadb.ClientAPI | None = None
         self._collection: chromadb.Collection | None = None
 
     async def initialize(self) -> None:
         """Create or retrieve the ChromaDB collection."""
         logger.info("Initializing ChromaDB collection %r", self._collection_name)
-        self._client = await asyncio.to_thread(chromadb.Client)
+        if self._persist_directory:
+            settings = chromadb.Settings(
+                persist_directory=str(self._persist_directory),
+                is_persistent=True,
+            )
+            self._client = await asyncio.to_thread(chromadb.Client, settings)
+        else:
+            self._client = await asyncio.to_thread(chromadb.Client)
         self._collection = await asyncio.to_thread(
             self._client.get_or_create_collection,
             name=self._collection_name,

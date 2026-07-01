@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -53,6 +54,23 @@ class MockChatModel(BaseChatModel):  # type: ignore[misc]
     def bind_tools(self, tools: Any, **kwargs: Any) -> MockChatModel:
         """Return self — tools are ignored in the mock."""
         return self
+
+
+@pytest.fixture(autouse=True)
+def isolated_guild_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Point every Guild's persistent storage at a fresh temp directory.
+
+    The persistence layer keys off ``GuildSettings.guild_home`` (default
+    ``./.guildmaster``). Without isolation, quests/talents/results persist to a
+    single on-disk SQLite DB that leaks state across test runs — e.g. restored
+    talents make the guild skip LLM talent assessment, desynchronising mocked
+    LLM response sequences. Overriding ``GUILD_GUILD_HOME`` per test keeps each
+    test hermetic and avoids polluting the working tree.
+    """
+    monkeypatch.setenv("GUILD_GUILD_HOME", str(tmp_path / "guild_home"))
 
 
 @pytest.fixture

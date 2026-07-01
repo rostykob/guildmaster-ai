@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 from uuid import uuid4
@@ -103,6 +104,18 @@ class BaseAdventurer:
         if added:
             self._logger.info("Granted talents: %s", added)
 
+    @property
+    def config_hash(self) -> str:
+        """Deterministic hash of this adventurer's configuration."""
+        parts = [
+            type(self).__name__,
+            ",".join(sorted(self.weapon_names)),
+            ",".join(sorted(a.name for a in self.armor)),
+            hashlib.md5(self.system_prompt.encode()).hexdigest()[:8],
+        ]
+        raw = "|".join(parts)
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
     # ── Spawning ──────────────────────────────────────────────────────
 
     def spawn(self) -> BaseAdventurer:
@@ -151,6 +164,23 @@ class BaseAdventurer:
                 return content
         return ""
 
+    @staticmethod
+    def _serialize_transcript(messages: list[Any]) -> list[dict[str, Any]]:
+        """Serialize LangChain agent messages into role/content dicts.
+
+        Produces a durable, provider-agnostic transcript the guild can persist
+        to memory. LangChain message ``type`` (``human``/``ai``/``tool``/
+        ``system``) becomes the ``role``.
+        """
+        transcript: list[dict[str, Any]] = []
+        for msg in messages:
+            role = getattr(msg, "type", None) or type(msg).__name__
+            content = getattr(msg, "content", "")
+            if not isinstance(content, str):
+                content = str(content)
+            transcript.append({"role": role, "content": content})
+        return transcript
+
     async def execute(self, quest: Quest) -> QuestResult:
         """Execute a quest using a LangChain agent.
 
@@ -187,6 +217,7 @@ class BaseAdventurer:
             quest_id=quest.id,
             success=True,
             summary=summary,
+            transcript=self._serialize_transcript(result["messages"]),
         )
 
     # ── Convenience helpers ─────────────────────────────────────────────

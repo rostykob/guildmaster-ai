@@ -129,6 +129,11 @@ class GuildBuilder:
         self._guard = guard if guard is not None else True
         return self
 
+    def with_guild_home(self, path: str | Path) -> GuildBuilder:
+        """Set the guild home directory for storage files."""
+        self._settings.guild_home = Path(path)
+        return self
+
     def with_scrolls_dir(self, path: str | Path) -> GuildBuilder:
         """Set the directory containing scroll (skill) packages.
 

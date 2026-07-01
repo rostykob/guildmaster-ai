@@ -404,7 +404,11 @@ class Guildmaster:
             self._llm,
             system=(
                 "You are a guild master analyzing quest complexity. "
-                "Decide whether this quest should be broken into subtasks. "
+                "Decide whether this quest should be broken into subtasks.\n\n"
+                "IMPORTANT: Most quests are simple. Only decompose if the quest "
+                "genuinely requires DIFFERENT skills or INDEPENDENT work streams. "
+                "A question, a single writing task, or a focused analysis should "
+                "NEVER be decomposed. When in doubt, keep it simple.\n\n"
                 "If the quest is simple (can be done by one adventurer), "
                 'respond with: {"decompose": false}\n'
                 "If the quest is complex, respond with:\n"
