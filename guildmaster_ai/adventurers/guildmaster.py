@@ -1,17 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING
 
 from guildmaster_ai.adventurers.base_adventurer import BaseAdventurer
+from guildmaster_ai.adventurers.base_hero import BaseHero
 from guildmaster_ai.core.messages import (
     AdventurerProfile,
     PartyLeaderDecision,
     QuestDraft,
-    QuestFeasibilityReport,
     QuestPlan,
     QuestResult,
+    QuestTriage,
     SubtaskSpec,
 )
 from guildmaster_ai.core.party import Party, PartyMember
@@ -19,9 +20,6 @@ from guildmaster_ai.core.quest import Quest, QuestRank
 from guildmaster_ai.core.quest_board import QuestBoard
 from guildmaster_ai.core.utils import parse_llm_json, safe_parse_llm_json
 from guildmaster_ai.llm.types import GuildLLM, guild_complete
-
-if TYPE_CHECKING:
-    from guildmaster_ai.adventurers.librarian import Librarian
 
 logger = logging.getLogger("guildmaster.guildmaster")
 
@@ -32,11 +30,9 @@ class Guildmaster:
     def __init__(
         self,
         llm: GuildLLM | None = None,
-        librarian: Librarian | None = None,
     ) -> None:
         self._roster: dict[str, BaseAdventurer] = {}
         self._llm = llm
-        self._librarian = librarian
 
     def register_adventurer(self, adventurer: BaseAdventurer) -> None:
         """Add an adventurer to the guild roster.
@@ -127,105 +123,171 @@ class Guildmaster:
             return self._derive_equipment_talents(adventurer)
         return talents
 
+    async def assess_talents_for(self, adventurer: BaseAdventurer) -> list[str]:
+        """Assess one adventurer's talents, preserving the "general" wildcard.
+
+        Wraps :meth:`_llm_assess_talents` and keeps the equipment-derived
+        "general" talent when the LLM omits it, so a general-purpose adventurer
+        never loses its wildcard eligibility.
+        """
+        assert self._llm is not None
+        had_general = "general" in adventurer.talents
+        new_talents = await self._llm_assess_talents(adventurer)
+        if had_general and "general" not in new_talents:
+            new_talents.append("general")
+        return new_talents
+
     async def refine_all_talents(self) -> None:
         """Assess talents for all registered adventurers using the LLM.
 
-        Called lazily on first quest when an LLM is available. Replaces
-        the initial equipment-derived talents with richer LLM-derived ones.
+        Adventurers that share a configuration (same class, weapons, armor, and
+        system prompt — i.e. identical ``config_hash``) are assessed **once** and
+        the result is applied to every instance. Unique configurations are
+        assessed concurrently. This replaces the initial equipment-derived
+        talents with richer LLM-derived ones.
         """
         if self._llm is None:
             return
 
-        logger.info("Assessing adventurer talents via LLM (%d adventurers)", len(self._roster))
+        # Group identical adventurers so we make one LLM call per unique config.
+        by_config: dict[str, list[BaseAdventurer]] = {}
         for adv in self._roster.values():
-            old_talents = adv.talents
-            had_general = "general" in old_talents
-            new_talents = await self._llm_assess_talents(adv)
-            # Preserve the "general" wildcard if it was the original equipment-derived talent
-            if had_general and "general" not in new_talents:
-                new_talents.append("general")
-            adv._talents.clear()
-            adv.grant_talents(new_talents)
+            by_config.setdefault(adv.config_hash, []).append(adv)
 
-            if set(new_talents) != set(old_talents):
-                logger.debug(
-                    "Assessed %s: %s -> %s",
-                    adv.name or adv.id,
-                    old_talents,
-                    new_talents,
-                )
+        logger.info(
+            "Assessing adventurer talents via LLM (%d adventurers, %d unique configs)",
+            len(self._roster),
+            len(by_config),
+        )
 
-    async def assess_quest_talents(self, draft: QuestDraft) -> list[str]:
-        """Determine which talents a quest requires using the LLM.
+        reps = [advs[0] for advs in by_config.values()]
+        assessed = await asyncio.gather(*(self.assess_talents_for(rep) for rep in reps))
 
-        Returns an empty list when no LLM is configured (all adventurers
-        with the "general" talent will still match).
+        for advs, new_talents in zip(by_config.values(), assessed, strict=True):
+            for adv in advs:
+                adv._talents.clear()
+                adv.grant_talents(new_talents)
+
+    async def triage_quest(self, draft: QuestDraft, chronicle: str = "") -> QuestTriage:
+        """Rank a quest and pick candidate adventurers in ONE LLM call.
+
+        Replaces the old talent-extraction → feasibility → adventurer-ranking
+        chain: the guildmaster already knows every adventurer's talents, so it
+        matches the quest description against the roster directly. Returns
+        candidates ordered best-first; an empty list with an
+        ``infeasible_reason`` means nobody can take the quest.
+
+        The rank drives routing: ranks below ``B`` are handled by a single
+        adventurer (no decomposition), ``B`` forms a party, and ``A``/``S`` are
+        hero-led. Falls back to rank ``E`` with the full roster when no LLM is
+        configured or the response can't be parsed.
+
+        *chronicle* is the librarian's rolling summary of lessons from past
+        quests (empty when observations are disabled).
         """
+        roster = list(self._roster.values())
+        if not roster:
+            return QuestTriage(
+                sender="guildmaster",
+                infeasible_reason="The guild has no registered adventurers",
+            )
         if self._llm is None:
-            return []
+            return QuestTriage(
+                sender="guildmaster",
+                adventurer_ids=[adv.id for adv in roster],
+            )
 
-        known = self._known_talents()
+        profiles = [
+            {
+                "id": adv.id,
+                "name": adv.name or adv.id,
+                "hero": isinstance(adv, BaseHero),
+                "talents": adv.talents,
+                "weapons": adv.weapon_names,
+            }
+            for adv in roster
+        ]
+        chronicle_text = (
+            f"\n\nGuild chronicle (lessons from past quests):\n{chronicle}" if chronicle else ""
+        )
+        hints = (
+            f"\nUser-requested talents: {draft.required_talents}" if draft.required_talents else ""
+        )
+
         raw = await guild_complete(
             self._llm,
             system=(
-                "You are a guild master assessing what talents are needed "
-                "for a quest. Given the quest description, return ONLY a "
-                "JSON array of talent strings. Prefer talents from this "
-                f"known list when applicable: {known}. "
-                "You may add new talent names if none fit."
+                "You are a guild master triaging a new quest. Decide two things:\n"
+                "(1) Its difficulty rank:\n"
+                "- F: trivial; one adventurer, no tools; single simple request\n"
+                "- E: one adventurer with a basic tool; single request\n"
+                "- D: one adventurer; multiple simple requests\n"
+                "- C: one adventurer with tools; multiple requests\n"
+                "- B: a party of adventurers; multiple INDEPENDENT subtasks\n"
+                "- A: a hero leading; multiple subtasks WITH dependencies\n"
+                "- S: a party led by a hero; advanced reasoning across subtasks\n"
+                "Most quests are F-C (one adventurer). Only pick B or higher "
+                "when the quest genuinely splits into multiple distinct subtasks.\n"
+                "(2) Which adventurers should take it, ordered best-fit first, "
+                "judged by their talents and weapons against the quest. Include "
+                "every adventurer that could contribute; for rank A/S prefer a "
+                "hero first. If NO adventurer can plausibly handle the quest, "
+                "return an empty list and a short infeasible_reason.\n"
+                'Respond with ONLY JSON: {"rank": "F|E|D|C|B|A|S", '
+                '"adventurers": ["<id>", ...], "infeasible_reason": null}'
             ),
-            user=f"Title: {draft.title}\nDescription: {draft.description}",
-        )
-        return self._parse_string_list(raw)
-
-    # ── Feasibility ────────────────────────────────────────────────────
-
-    def check_feasibility(self, draft: QuestDraft) -> QuestFeasibilityReport:
-        """Check whether the guild can staff a quest draft.
-
-        The "general" talent is a wildcard: an adventurer with it is eligible
-        for *any* quest regardless of required talents.  This means a guild
-        with at least one general-purpose adventurer always reports feasible=True
-        (no missing talents), even if no specialist exists.
-        """
-        logger.info(
-            "Checking feasibility for %r (requires: %s)",
-            draft.title,
-            draft.required_talents,
-        )
-        all_talents: set[str] = set()
-        matched: list[AdventurerProfile] = []
-
-        for adv in self._roster.values():
-            adv_talents = set(adv.talents)
-            all_talents.update(adv_talents)
-            # "general" talent acts as a wildcard — the adventurer can attempt any quest
-            if "general" in adv_talents or set(draft.required_talents) & adv_talents:
-                matched.append(adv.profile())
-
-        # If no specific talents required, all adventurers are potential matches
-        if not draft.required_talents:
-            matched = [adv.profile() for adv in self._roster.values()]
-
-        # Only report truly missing talents if no general-purpose adventurer is available.
-        # A "general" adventurer can cover any gap, so missing = [] in that case.
-        has_general = any("general" in set(a.talents) for a in self._roster.values())
-        missing = [] if has_general else [t for t in draft.required_talents if t not in all_talents]
-        feasible = len(missing) == 0 and len(matched) > 0
-        logger.info(
-            "Feasibility: feasible=%s matched=%d missing=%s",
-            feasible,
-            len(matched),
-            missing,
+            user=(
+                f"Title: {draft.title}\n"
+                f"Description: {draft.description}{hints}\n\n"
+                f"Adventurers:\n{json.dumps(profiles, indent=2)}"
+                f"{chronicle_text}"
+            ),
         )
 
-        return QuestFeasibilityReport(
+        data = safe_parse_llm_json(raw, context="triage_quest")
+        if not isinstance(data, dict):
+            logger.warning("Could not parse triage response — using full roster, rank E")
+            return QuestTriage(
+                sender="guildmaster",
+                adventurer_ids=[adv.id for adv in roster],
+            )
+
+        reason = data.get("infeasible_reason") or None
+        candidate_ids = self._resolve_adventurer_refs(data.get("adventurers", []))
+        if not candidate_ids and reason is None:
+            # LLM answered but named nobody we know — don't brick the quest.
+            candidate_ids = [adv.id for adv in roster]
+        return QuestTriage(
             sender="guildmaster",
-            feasible=feasible,
-            matched_adventurers=matched,
-            missing_talents=missing,
-            recommended_rank=draft.rank or QuestRank.E,
+            rank=self._parse_rank(data.get("rank")),
+            adventurer_ids=candidate_ids,
+            infeasible_reason=reason if not candidate_ids else None,
         )
+
+    def _resolve_adventurer_refs(self, refs: object) -> list[str]:
+        """Map LLM-provided adventurer ids or names onto roster ids (order kept)."""
+        if not isinstance(refs, list):
+            return []
+        by_name = {
+            (adv.name or adv.id).lower(): adv.id for adv in self._roster.values()
+        }
+        resolved: list[str] = []
+        for ref in refs:
+            key = str(ref)
+            adv_id = key if key in self._roster else by_name.get(key.lower())
+            if adv_id is not None and adv_id not in resolved:
+                resolved.append(adv_id)
+        return resolved
+
+    @staticmethod
+    def _parse_rank(value: object) -> QuestRank:
+        """Parse a rank letter (e.g. "B") into a :class:`QuestRank`, default E."""
+        if isinstance(value, str):
+            try:
+                return QuestRank[value.strip().upper()]
+            except KeyError:
+                pass
+        return QuestRank.E
 
     # ── Adventurer matching ────────────────────────────────────────────
 
@@ -246,82 +308,16 @@ class Guildmaster:
 
         return eligible
 
-    async def rank_adventurers(
-        self,
-        quest: Quest,
-    ) -> list[BaseAdventurer]:
-        """Return adventurers ranked by suitability for the quest.
+    def get_adventurer(self, adventurer_id: str) -> BaseAdventurer | None:
+        """Return a roster adventurer by id, or ``None``."""
+        return self._roster.get(adventurer_id)
 
-        Uses the LLM when available to score each adventurer's profile
-        against the quest; falls back to :meth:`match_adventurers`.
-        """
-        candidates = self.match_adventurers(quest)
-        if not candidates or self._llm is None or len(candidates) <= 1:
-            return candidates
-
-        profiles = {
-            adv.id: {
-                "name": adv.name or adv.id,
-                "talents": adv.talents,
-                "weapons": adv.weapon_names,
-            }
-            for adv in candidates
-        }
-
-        raw = await guild_complete(
-            self._llm,
-            system=(
-                "You are a guild master choosing the best adventurer for a quest. "
-                "Given the quest and adventurer profiles, return ONLY a JSON array "
-                "of adventurer IDs ordered from best to worst fit."
-            ),
-            user=(
-                f"Quest: {quest.title}\n"
-                f"Description: {quest.description}\n"
-                f"Required talents: {quest.required_talents}\n\n"
-                f"Adventurers:\n{json.dumps(profiles, indent=2)}"
-            ),
-        )
-
-        ranked_ids = self._parse_string_list(raw)
-        id_to_adv = {adv.id: adv for adv in candidates}
-        ranked = [id_to_adv[aid] for aid in ranked_ids if aid in id_to_adv]
-        # Append any candidates the LLM missed
-        for adv in candidates:
-            if adv not in ranked:
-                ranked.append(adv)
-        return ranked
-
-    # ── Quest assignment ───────────────────────────────────────────────
-
-    async def assign_quest(self, quest: Quest, board: QuestBoard) -> Party | None:
-        """Match adventurers, form a party, and assign the quest on the board."""
-        logger.info("Assigning quest %s: %r", quest.id[:8], quest.title)
-        if self._llm is not None:
-            matched = await self.rank_adventurers(quest)
-        else:
-            matched = self.match_adventurers(quest)
-
-        if not matched:
-            logger.warning("No adventurers matched quest %s", quest.id[:8])
+    def _resolve_assignee(self, ref: str) -> BaseAdventurer | None:
+        """Resolve a planned assignee reference (id or name) to an adventurer."""
+        if not ref:
             return None
-
-        leader = matched[0]
-        party = Party(
-            name=f"Party for {quest.title}",
-            leader_id=leader.id,
-            quest_id=quest.id,
-            members=[
-                PartyMember(
-                    adventurer_id=adv.id,
-                    role="leader" if adv.id == leader.id else "member",
-                )
-                for adv in matched
-            ],
-        )
-
-        board.assign(quest.id, party.id, actor="guildmaster")
-        return party
+        ids = self._resolve_adventurer_refs([ref])
+        return self._roster.get(ids[0]) if ids else None
 
     # ── Verification ───────────────────────────────────────────────────
 
@@ -373,11 +369,15 @@ class Guildmaster:
 
     # ── Quest decomposition ──────────────────────────────────────────
 
-    async def plan_quest(self, quest: Quest) -> QuestPlan | None:
+    async def plan_quest(self, quest: Quest, chronicle: str = "") -> QuestPlan | None:
         """Analyze a quest and decide whether to decompose it into subtasks.
 
         Returns a :class:`QuestPlan` if the quest should be decomposed,
-        or ``None`` if it should be handled as a simple quest.
+        or ``None`` if it should be handled as a simple quest. Each subtask
+        gets an ``assignee`` picked from the roster in the same call.
+
+        *chronicle* is the librarian's rolling lessons summary — injected as
+        context instead of raw retrieved observation chunks.
         """
         if self._llm is None:
             logger.debug("No LLM configured — skipping quest planning")
@@ -385,20 +385,13 @@ class Guildmaster:
 
         logger.info("Analyzing quest %s for decomposition", quest.id[:8])
 
-        # Search librarian for similar past quests
-        prior_observations: list[str] = []
-        if self._librarian is not None:
-            similar = await self._librarian.search_similar_quests(
-                quest.description,
-                n_results=3,
-            )
-            prior_observations = [obs.summary for obs in similar]
-
-        obs_text = ""
-        if prior_observations:
-            obs_text = "\n\nPrior observations from similar quests:\n" + "\n".join(
-                f"- {o}" for o in prior_observations
-            )
+        profiles = [
+            {"id": adv.id, "name": adv.name or adv.id, "talents": adv.talents}
+            for adv in self._roster.values()
+        ]
+        chronicle_text = (
+            f"\n\nGuild chronicle (lessons from past quests):\n{chronicle}" if chronicle else ""
+        )
 
         raw = await guild_complete(
             self._llm,
@@ -414,8 +407,10 @@ class Guildmaster:
                 "If the quest is complex, respond with:\n"
                 '{"decompose": true, "strategy": "brief strategy", '
                 '"subtasks": [{"title": "...", "description": "...", '
-                '"required_talents": [...], "acceptance_criteria": [...], '
+                '"assignee": "<adventurer id>", "acceptance_criteria": [...], '
                 '"depends_on": [...]}]}\n'
+                '"assignee" is the id of the roster adventurer best suited for '
+                "the subtask.\n"
                 '"depends_on" is a list of 0-based subtask indices that must '
                 "complete before this subtask can start. Use [] for independent subtasks.\n"
                 "Respond with ONLY a JSON object."
@@ -423,9 +418,9 @@ class Guildmaster:
             user=(
                 f"Quest: {quest.title}\n"
                 f"Description: {quest.description}\n"
-                f"Required talents: {quest.required_talents}\n"
-                f"Acceptance criteria: {quest.acceptance_criteria}"
-                f"{obs_text}"
+                f"Acceptance criteria: {quest.acceptance_criteria}\n\n"
+                f"Adventurers:\n{json.dumps(profiles, indent=2)}"
+                f"{chronicle_text}"
             ),
         )
 
@@ -444,6 +439,7 @@ class Guildmaster:
                 required_talents=st.get("required_talents", []),
                 acceptance_criteria=st.get("acceptance_criteria", []),
                 depends_on=st.get("depends_on", []),
+                assignee=str(st.get("assignee", "")),
             )
             for st in data.get("subtasks", [])
         ]
@@ -461,7 +457,7 @@ class Guildmaster:
             quest_id=quest.id,
             subtasks=subtasks,
             strategy=data.get("strategy", ""),
-            prior_observations=prior_observations,
+            prior_observations=[chronicle] if chronicle else [],
         )
 
     async def form_party_for_plan(
@@ -503,17 +499,20 @@ class Guildmaster:
             quest_id=quest.id,
         )
 
-        for child in child_quests:
-            matched = self.match_adventurers(child)
-            if not matched:
-                matched = list(self._roster.values())
+        for child, spec in zip(child_quests, plan.subtasks, strict=True):
+            # Prefer the assignee the planning call already chose; fall back
+            # to talent matching, then to the full roster.
+            adventurer = self._resolve_assignee(spec.assignee)
+            if adventurer is None:
+                matched = self.match_adventurers(child) or list(self._roster.values())
+                adventurer = matched[0] if matched else None
                 logger.debug(
-                    "No talent match for subtask %r — falling back to full roster",
+                    "No planned assignee for subtask %r — matched %s",
                     child.title,
+                    adventurer.name or adventurer.id if adventurer else None,
                 )
 
-            if matched:
-                adventurer = matched[0]
+            if adventurer is not None:
                 party.assign_subtask(child.id, adventurer.id)
                 logger.debug(
                     "Subtask %r -> adventurer %s",

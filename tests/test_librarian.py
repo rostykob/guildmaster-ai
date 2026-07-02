@@ -8,6 +8,8 @@ from guildmaster_ai.adventurers.librarian import Librarian
 from guildmaster_ai.core.messages import QuestResult
 from guildmaster_ai.core.quest import Quest, QuestRank, QuestStatus
 
+from .conftest import MockChatModel
+
 
 def _make_quest(**overrides) -> Quest:
     defaults = {
@@ -107,3 +109,45 @@ class TestLibrarian:
         ]
         observations = await lib.analyze_batch(pairs)
         assert len(observations) == 3
+
+
+class TestObservationCoercion:
+    """The parser must tolerate real-LLM tag shapes (dicts, non-strings)."""
+
+    @pytest.mark.asyncio
+    async def test_dict_tags_are_flattened(self) -> None:
+        mock_llm = MockChatModel(
+            response_content=(
+                '{"summary": "ok", '
+                '"tags": [{"outcome": "success"}, {"talent": "general"}, "bug"], '
+                '"lessons_learned": ["be careful", 42]}'
+            )
+        )
+        lib = Librarian(llm=mock_llm)
+        quest = _make_quest()
+        result = _make_result(quest)
+
+        obs = await lib.analyze_quest(quest, result)
+        assert obs.tags == ["success", "talent:general", "bug"]
+        assert obs.lessons_learned == ["be careful", "42"]
+
+    def test_coerce_tags_handles_non_list(self) -> None:
+        assert Librarian._coerce_tags("success") == ["success"]
+        assert Librarian._coerce_tags({"talent": "coding"}) == ["talent:coding"]
+        assert Librarian._coerce_tags({"outcome": "success"}) == ["success"]
+        assert Librarian._coerce_tags(None) == []
+
+    def test_model_rejects_no_dict_tags_at_boundary(self) -> None:
+        """QuestObservation itself normalizes dict/non-string items — no caller
+        can construct an invalid observation, even bypassing the librarian."""
+        from guildmaster_ai.core.messages import QuestObservation
+
+        obs = QuestObservation(
+            sender="librarian",
+            quest_id="q",
+            summary="ok",
+            tags=[{"outcome": "success"}, {"pattern": "geography"}, "bug"],
+            lessons_learned=["note", 42],
+        )
+        assert obs.tags == ["outcome:success", "pattern:geography", "bug"]
+        assert obs.lessons_learned == ["note", "42"]

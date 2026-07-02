@@ -92,8 +92,26 @@ class GuildSettings(BaseSettings):
         return self.guild_home / "chroma"
 
     # ── Quest behaviour ──────────────────────────────────────────────────
+    # Refine each request via the receptionist (title + acceptance criteria,
+    # one LLM call). Disable for a faster lane: raw request goes straight to
+    # triage, and without criteria the verification call is skipped too.
+    refine_requests: bool = True
     max_clarification_rounds: int = 3
     max_quest_retries: int = 3
+    # How many quests may execute concurrently in the background worker.
+    max_concurrent_quests: int = 3
+
+    # ── Librarian / memory ───────────────────────────────────────────────
+    # Librarian observations (LLM analysis of finished quests) are disconnected
+    # from the main quest flow by default: they add an LLM call + embedding per
+    # quest without feeding back into planning yet. Quests, results, findings,
+    # and conversations are always persisted to SQLite regardless.
+    enable_observations: bool = False
+    # Persist librarian observations to the Chroma vector store for semantic
+    # recall of past quests (only used when enable_observations is on).
+    enable_vector_store: bool = True
+    # Run quest archival (LLM analysis + persistence) off the request path.
+    background_archival: bool = True
 
     # ── Observability ────────────────────────────────────────────────────
     log_level: str = "INFO"

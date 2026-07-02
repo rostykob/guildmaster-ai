@@ -8,8 +8,14 @@ from guildmaster_ai.core.quest import Quest
 from guildmaster_ai.core.utils import safe_parse_llm_json
 from guildmaster_ai.llm.types import GuildLLM, guild_complete
 from guildmaster_ai.memory.chroma_store import ChromaStore
+from guildmaster_ai.memory.sqlite_store import SQLiteStore
 
 logger = logging.getLogger("guildmaster.librarian")
+
+# guild_state key holding the rolling chronicle (see Librarian.get_chronicle).
+_CHRONICLE_KEY = "librarian_chronicle"
+# Hard cap so the chronicle stays a cheap prompt injection, never a transcript.
+_CHRONICLE_MAX_CHARS = 2000
 
 # Structured tag taxonomy for quest observations.
 # Tags follow the pattern "category:value" for machine-queryable indexing.
@@ -29,10 +35,13 @@ class Librarian:
         self,
         llm: GuildLLM | None = None,
         vector_store: ChromaStore | None = None,
+        store: SQLiteStore | None = None,
     ) -> None:
         self._llm = llm
         self._observations: list[QuestObservation] = []
         self._vector_store = vector_store
+        self._store = store
+        self._chronicle: str | None = None  # lazy-loaded cache of the stored chronicle
 
     async def archive(self, quest: Quest, result: QuestResult) -> dict[str, Any]:
         """Produce a summary dict and generate observations from the quest."""
@@ -41,9 +50,24 @@ class Librarian:
         self._observations.append(observation)
         logger.debug("Observation tags: %s", observation.tags)
 
-        # Persist to vector store for semantic search in future quests
+        # Persist observation durably to SQLite (always) so it survives the
+        # process and is queryable on demand.
+        if self._store is not None:
+            await self._store.save_observation(
+                obs_id=observation.id,
+                quest_id=observation.quest_id,
+                summary=observation.summary,
+                tags=observation.tags,
+                lessons_learned=observation.lessons_learned,
+            )
+
+        # Persist to the vector store for semantic search in future quests.
         if self._vector_store is not None:
             await self._store_observation(observation)
+
+        # Fold the observation into the rolling chronicle so future quests get
+        # a compact lessons summary instead of raw observation chunks.
+        await self._update_chronicle(observation)
 
         return {
             "quest_id": quest.id,
@@ -53,6 +77,64 @@ class Librarian:
             "summary": result.summary,
             "observation": observation.model_dump(),
         }
+
+    # ── Chronicle (rolling lessons summary) ───────────────────────────
+
+    async def get_chronicle(self) -> str:
+        """Return the rolling summary of lessons distilled from past quests.
+
+        This is the cheap read side: a single stored string, no LLM call and
+        no vector query. The guildmaster injects it into triage/planning
+        prompts. Updated on the write side by :meth:`archive`.
+        """
+        if self._chronicle is None:
+            if self._store is not None:
+                self._chronicle = await self._store.get_guild_state(_CHRONICLE_KEY) or ""
+            else:
+                self._chronicle = ""
+        return self._chronicle
+
+    async def _update_chronicle(self, observation: QuestObservation) -> None:
+        """Fold *observation* into the chronicle (runs on the archival path).
+
+        With an LLM the old chronicle and the new observation are distilled
+        into a fresh summary; without one, lesson lines are appended and the
+        oldest are dropped. Either way the result is capped so injecting it
+        into prompts stays cheap.
+        """
+        current = await self.get_chronicle()
+
+        if self._llm is not None:
+            updated = await guild_complete(
+                self._llm,
+                system=(
+                    "You are a guild librarian maintaining the guild chronicle — "
+                    "a compact summary of durable lessons from past quests, used "
+                    "as planning context for future quests. Merge the new "
+                    "observation into the chronicle: keep only actionable, "
+                    "recurring lessons (what worked, what failed and why, which "
+                    "adventurer/skill fits what), drop one-off trivia, and stay "
+                    "under 15 bullet points. Respond with ONLY the updated "
+                    "chronicle as a markdown bullet list."
+                ),
+                user=(
+                    f"Current chronicle:\n{current or '(empty)'}\n\n"
+                    f"New observation:\n"
+                    f"Summary: {observation.summary}\n"
+                    f"Tags: {observation.tags}\n"
+                    f"Lessons: {observation.lessons_learned}"
+                ),
+            )
+        else:
+            lines = [ln for ln in current.splitlines() if ln.strip()]
+            additions = observation.lessons_learned or [observation.summary]
+            lines.extend(f"- {a}" for a in additions if a)
+            updated = "\n".join(lines[-15:])
+
+        self._chronicle = updated.strip()[:_CHRONICLE_MAX_CHARS]
+        if self._store is not None:
+            await self._store.save_guild_state(_CHRONICLE_KEY, self._chronicle)
+        logger.debug("Chronicle updated (%d chars)", len(self._chronicle))
 
     async def analyze_quest(
         self,
@@ -91,6 +173,22 @@ class Librarian:
             tag_set = set(tags)
             results = [o for o in results if tag_set & set(o.tags)]
         return results
+
+    async def recent_observations(
+        self,
+        quest_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Fetch persisted observations from the store (on-demand, newest first).
+
+        Reads durable history from SQLite rather than the in-memory list, so it
+        works across processes. Falls back to the in-memory observations when no
+        store is configured.
+        """
+        if self._store is not None:
+            return await self._store.get_observations(quest_id=quest_id, limit=limit)
+        obs = self.query_observations(quest_id=quest_id)
+        return [o.model_dump() for o in obs[:limit]]
 
     async def search_observations(
         self,
@@ -274,11 +372,45 @@ class Librarian:
             return QuestObservation(
                 sender="librarian",
                 quest_id=quest.id,
-                summary=data.get("summary", ""),
-                tags=data.get("tags", []),
-                lessons_learned=data.get("lessons_learned", []),
+                summary=str(data.get("summary", "")),
+                tags=self._coerce_tags(data.get("tags", [])),
+                lessons_learned=self._coerce_str_list(data.get("lessons_learned", [])),
             )
         return self._rule_based_analyze(quest, result)
+
+    @staticmethod
+    def _coerce_tags(raw: Any) -> list[str]:
+        """Normalise LLM-provided tags into ``category:value`` strings.
+
+        Models often return the taxonomy as dicts (e.g. ``{"talent": "general"}``
+        or ``{"outcome": "success"}``) instead of the expected ``"talent:general"``
+        strings. Flatten those to strings so validation never rejects a whole
+        observation over tag shape.
+        """
+        if not isinstance(raw, list):
+            raw = [raw]
+        tags: list[str] = []
+        for item in raw:
+            if isinstance(item, str):
+                tags.append(item)
+            elif isinstance(item, dict):
+                for key, value in item.items():
+                    # {"outcome": "success"} / {"category": "bug"} → bare value;
+                    # {"talent": "general"} → "talent:general".
+                    if key in ("outcome", "category"):
+                        tags.append(str(value))
+                    else:
+                        tags.append(f"{key}:{value}")
+            elif item is not None:
+                tags.append(str(item))
+        return tags
+
+    @staticmethod
+    def _coerce_str_list(raw: Any) -> list[str]:
+        """Coerce an arbitrary LLM value into a list of strings."""
+        if not isinstance(raw, list):
+            raw = [raw]
+        return [str(item) for item in raw if item is not None]
 
     async def _store_observation(self, obs: QuestObservation) -> None:
         """Persist an observation to the vector store."""

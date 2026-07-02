@@ -213,3 +213,5 @@ uv.lock
 .guildmaster/
 .omc/
 .claude/
+.vscode/
+IDEAS.md

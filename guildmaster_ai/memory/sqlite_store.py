@@ -95,6 +95,15 @@ class SQLiteStore:
                 timestamp TEXT NOT NULL,
                 FOREIGN KEY (quest_id) REFERENCES quests(id)
             );
+
+            CREATE TABLE IF NOT EXISTS observations (
+                id TEXT PRIMARY KEY,
+                quest_id TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                tags TEXT NOT NULL DEFAULT '[]',
+                lessons_learned TEXT NOT NULL DEFAULT '[]',
+                timestamp TEXT NOT NULL
+            );
             """
         )
         await self._db.commit()
@@ -489,6 +498,81 @@ class SQLiteStore:
                 "summary": row[2],
                 "data": json.loads(row[3]),
                 "timestamp": row[4],
+            }
+            for row in rows
+        ]
+
+    # ── Observations ─────────────────────────────────────────────────────
+
+    async def save_observation(
+        self,
+        obs_id: str,
+        quest_id: str,
+        summary: str,
+        tags: list[str],
+        lessons_learned: list[str],
+    ) -> None:
+        """Persist a librarian observation (upsert by observation id)."""
+        if self._db is None:
+            raise RuntimeError("Store not initialized. Call initialize() first.")
+
+        await self._db.execute(
+            """
+            INSERT INTO observations
+                (id, quest_id, summary, tags, lessons_learned, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                quest_id = excluded.quest_id,
+                summary = excluded.summary,
+                tags = excluded.tags,
+                lessons_learned = excluded.lessons_learned,
+                timestamp = excluded.timestamp
+            """,
+            (
+                obs_id,
+                quest_id,
+                summary,
+                json.dumps(tags),
+                json.dumps(lessons_learned),
+                _utcnow().isoformat(),
+            ),
+        )
+        await self._db.commit()
+
+    async def get_observations(
+        self,
+        quest_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Retrieve stored observations (newest first), optionally by quest."""
+        if self._db is None:
+            raise RuntimeError("Store not initialized. Call initialize() first.")
+
+        if quest_id is not None:
+            query = (
+                "SELECT id, quest_id, summary, tags, lessons_learned, timestamp"
+                " FROM observations WHERE quest_id = ?"
+                " ORDER BY timestamp DESC LIMIT ?"
+            )
+            params: tuple[Any, ...] = (quest_id, limit)
+        else:
+            query = (
+                "SELECT id, quest_id, summary, tags, lessons_learned, timestamp"
+                " FROM observations ORDER BY timestamp DESC LIMIT ?"
+            )
+            params = (limit,)
+
+        async with self._db.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+
+        return [
+            {
+                "id": row[0],
+                "quest_id": row[1],
+                "summary": row[2],
+                "tags": json.loads(row[3]),
+                "lessons_learned": json.loads(row[4]),
+                "timestamp": row[5],
             }
             for row in rows
         ]

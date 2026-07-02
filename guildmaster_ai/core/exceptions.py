@@ -56,3 +56,17 @@ class ArmorBlockedError(GuildmasterError):
 
 class ScrollValidationError(GuildmasterError):
     """A scroll failed validation."""
+
+
+class AdventurerDefeatedError(GuildmasterError):
+    """An adventurer ran out of AP (tool calls) or HP (error retries) mid-quest.
+
+    ``stat`` is ``"ap"`` when the tool-call budget was exhausted and ``"hp"``
+    when too many tool errors occurred.
+    """
+
+    def __init__(self, stat: str, adventurer: str, detail: str) -> None:
+        self.stat = stat
+        self.adventurer = adventurer
+        self.detail = detail
+        super().__init__(f"Adventurer {adventurer!r} defeated ({stat} depleted): {detail}")

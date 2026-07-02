@@ -8,9 +8,8 @@ import pytest
 
 from guildmaster_ai.adventurers.general_adventurer import GeneralAdventurer
 from guildmaster_ai.adventurers.guildmaster import Guildmaster
-from guildmaster_ai.adventurers.librarian import Librarian
 from guildmaster_ai.core.messages import QuestDraft, QuestResult
-from guildmaster_ai.core.quest import Quest
+from guildmaster_ai.core.quest import Quest, QuestRank
 from guildmaster_ai.core.quest_board import QuestBoard
 
 from .conftest import MockChatModel
@@ -38,39 +37,6 @@ class TestGuildmaster:
         adv.equip_weapon(WebSearchWeapon())
         gm.register_adventurer(adv)
         assert "web_search" in adv.talents
-
-    def test_check_feasibility_feasible(self, mock_llm) -> None:
-        gm = Guildmaster(llm=mock_llm)
-        adv = GeneralAdventurer(llm=mock_llm)
-        gm.register_adventurer(adv)
-
-        draft = QuestDraft(
-            title="Test",
-            description="A test",
-            required_talents=["general"],
-            acceptance_criteria=["Done"],
-        )
-        report = gm.check_feasibility(draft)
-        assert report.feasible is True
-        assert len(report.matched_adventurers) >= 1
-
-    def test_check_feasibility_not_feasible(self, mock_llm) -> None:
-        gm = Guildmaster(llm=mock_llm)
-        adv = GeneralAdventurer(llm=mock_llm)
-        gm.register_adventurer(adv)
-
-        # A "general" adventurer can attempt any quest, so an empty roster
-        # is needed to get infeasibility.
-        gm_empty = Guildmaster(llm=mock_llm)
-        draft = QuestDraft(
-            title="Test",
-            description="A test",
-            required_talents=["quantum_computing"],
-            acceptance_criteria=["Done"],
-        )
-        report = gm_empty.check_feasibility(draft)
-        assert report.feasible is False
-        assert "quantum_computing" in report.missing_talents
 
     def test_match_adventurers(self, mock_llm, sample_quest) -> None:
         gm = Guildmaster(llm=mock_llm)
@@ -132,47 +98,60 @@ class TestGuildmaster:
         assert plan.subtasks[0].title == "Research"
 
     @pytest.mark.asyncio
-    async def test_plan_quest_with_librarian_observations(self) -> None:
-        """plan_quest includes prior observations from the librarian."""
+    async def test_plan_quest_with_chronicle(self) -> None:
+        """plan_quest carries the chronicle summary as prior observation context."""
         mock_llm = MockChatModel(
             response_content=json.dumps(
                 {
                     "decompose": True,
                     "strategy": "Use past knowledge",
                     "subtasks": [
-                        {
-                            "title": "Sub 1",
-                            "description": "Do sub 1",
-                        },
-                        {
-                            "title": "Sub 2",
-                            "description": "Do sub 2",
-                        },
+                        {"title": "Sub 1", "description": "Do sub 1"},
+                        {"title": "Sub 2", "description": "Do sub 2"},
                     ],
                 }
             )
         )
-        librarian = Librarian(llm=mock_llm)
-        # Pre-populate librarian with observations
-        from guildmaster_ai.core.messages import QuestObservation
-
-        librarian._observations.append(
-            QuestObservation(
-                sender="librarian",
-                quest_id="old-quest",
-                summary="Similar quest succeeded with research approach",
-                tags=["success"],
-            )
-        )
-
-        gm = Guildmaster(llm=mock_llm, librarian=librarian)
+        gm = Guildmaster(llm=mock_llm)
         quest = Quest(
             title="Test",
             description="Similar quest to do research",
         )
+        chronicle = "- Research quests succeed with the research approach"
+        plan = await gm.plan_quest(quest, chronicle=chronicle)
+        assert plan is not None
+        assert plan.prior_observations == [chronicle]
+
+    @pytest.mark.asyncio
+    async def test_plan_quest_assigns_subtask_assignees(self) -> None:
+        """Planned assignees are parsed and honored by form_party_for_plan."""
+        mock_llm = MockChatModel()
+        gm = Guildmaster(llm=mock_llm)
+        adv_a = GeneralAdventurer(name="Alpha", llm=mock_llm)
+        adv_b = GeneralAdventurer(name="Beta", llm=mock_llm)
+        gm.register_adventurer(adv_a)
+        gm.register_adventurer(adv_b)
+        mock_llm.response_content = json.dumps(
+            {
+                "decompose": True,
+                "strategy": "split",
+                "subtasks": [
+                    {"title": "Sub 1", "description": "Do 1", "assignee": adv_b.id},
+                    {"title": "Sub 2", "description": "Do 2", "assignee": "Alpha"},
+                ],
+            }
+        )
+        quest = Quest(title="Parent", description="Two parts")
         plan = await gm.plan_quest(quest)
         assert plan is not None
-        assert len(plan.prior_observations) > 0
+        assert plan.subtasks[0].assignee == adv_b.id
+        assert plan.subtasks[1].assignee == "Alpha"
+
+        board = QuestBoard()
+        board.post(quest)
+        party, children = await gm.form_party_for_plan(quest, plan, board)
+        assert party.subtask_assignments[children[0].id] == adv_b.id
+        assert party.subtask_assignments[children[1].id] == adv_a.id
 
     @pytest.mark.asyncio
     async def test_plan_quest_no_llm_returns_none(self) -> None:
@@ -316,3 +295,96 @@ class TestGuildmaster:
 
         await gm.refine_all_talents()
         assert adv.talents == ["general"]  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_refine_all_talents_dedupes_identical_configs(self) -> None:
+        """Identical adventurers are assessed once (one LLM call), applied to all."""
+        mock_llm = MockChatModel(response_content='["coding", "general"]')
+        gm = Guildmaster(llm=mock_llm)
+        for _ in range(3):
+            gm.register_adventurer(GeneralAdventurer(llm=mock_llm))
+
+        await gm.refine_all_talents()
+
+        # Three identical configs → a single assessment call.
+        assert mock_llm.call_count == 1
+        for adv in gm._roster.values():
+            assert "coding" in adv.talents
+
+    # ── Quest triage ──────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_triage_returns_rank_and_candidates_by_id(self) -> None:
+        """triage_quest parses rank and resolves adventurer ids in one call."""
+        mock_llm = MockChatModel()
+        gm = Guildmaster(llm=mock_llm)
+        adv = GeneralAdventurer(llm=mock_llm)
+        gm.register_adventurer(adv)
+        mock_llm.response_content = (
+            f'{{"rank": "B", "adventurers": ["{adv.id}"], "infeasible_reason": null}}'
+        )
+
+        triage = await gm.triage_quest(QuestDraft(title="Build stuff", description="Two parts"))
+        assert triage.rank is QuestRank.B
+        assert triage.adventurer_ids == [adv.id]
+        assert triage.infeasible_reason is None
+
+    @pytest.mark.asyncio
+    async def test_triage_resolves_adventurers_by_name(self) -> None:
+        mock_llm = MockChatModel(
+            response_content='{"rank": "E", "adventurers": ["Scout"]}'
+        )
+        gm = Guildmaster(llm=mock_llm)
+        adv = GeneralAdventurer(name="Scout", llm=mock_llm)
+        gm.register_adventurer(adv)
+
+        triage = await gm.triage_quest(QuestDraft(title="x", description="y"))
+        assert triage.adventurer_ids == [adv.id]
+
+    @pytest.mark.asyncio
+    async def test_triage_empty_roster_is_infeasible_without_llm_call(self) -> None:
+        mock_llm = MockChatModel()
+        gm = Guildmaster(llm=mock_llm)
+        triage = await gm.triage_quest(QuestDraft(title="x", description="y"))
+        assert triage.adventurer_ids == []
+        assert triage.infeasible_reason is not None
+        assert mock_llm.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_triage_falls_back_to_full_roster_on_bad_json(self) -> None:
+        """Unparseable responses use the full roster at an easy rank."""
+        mock_llm = MockChatModel(response_content="not json")
+        gm = Guildmaster(llm=mock_llm)
+        adv = GeneralAdventurer(llm=mock_llm)
+        gm.register_adventurer(adv)
+
+        triage = await gm.triage_quest(QuestDraft(title="x", description="y"))
+        assert triage.rank is QuestRank.E
+        assert triage.adventurer_ids == [adv.id]
+
+    @pytest.mark.asyncio
+    async def test_triage_unknown_names_fall_back_to_roster(self) -> None:
+        """Hallucinated adventurer names must not brick the quest."""
+        mock_llm = MockChatModel(
+            response_content='{"rank": "E", "adventurers": ["Gandalf"]}'
+        )
+        gm = Guildmaster(llm=mock_llm)
+        adv = GeneralAdventurer(llm=mock_llm)
+        gm.register_adventurer(adv)
+
+        triage = await gm.triage_quest(QuestDraft(title="x", description="y"))
+        assert triage.adventurer_ids == [adv.id]
+        assert triage.infeasible_reason is None
+
+    @pytest.mark.asyncio
+    async def test_triage_honors_infeasible_reason(self) -> None:
+        mock_llm = MockChatModel(
+            response_content='{"rank": "S", "adventurers": [], '
+            '"infeasible_reason": "Requires quantum computing"}'
+        )
+        gm = Guildmaster(llm=mock_llm)
+        gm.register_adventurer(GeneralAdventurer(llm=mock_llm))
+
+        triage = await gm.triage_quest(QuestDraft(title="x", description="y"))
+        assert triage.adventurer_ids == []
+        assert triage.infeasible_reason == "Requires quantum computing"

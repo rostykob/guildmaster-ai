@@ -17,13 +17,13 @@ logger = logging.getLogger("guildmaster.quest")
 class QuestRank(enum.IntEnum):
     """Quest difficulty rank, orderable from lowest (F) to highest (S)."""
 
-    F = 0  # Can be done by one odventurer with no  weapons or armor. Contains single simple request
-    E = 1  # can be done by one adventurer with basic weapons or armor. Contains single request that can be solved by weapon
-    D = 2  #  Can be done by one adventurer with no weapons and armor. Contains multiple requests simple
-    C = 3  # Can be done by one adventurer with basic weapons and armor. Contains multiple requests that can be solved by weapon
-    B = 4  # Can be done by a party of adventurers with  weapons and armor. Contains multiple requests or sub tasks no dependencies between them
-    A = 5  # Can be done by hero with  weapons and armor. Contains multiple requests or sub tasks with dependencies betwen them
-    S = 6  # Can be done by a  party of adventurers lead by hero with weapons and armor. Contains multiple requests that require advanced reasonong or skills
+    F = 0  # One adventurer, no weapons/armor. Single simple request.
+    E = 1  # One adventurer with basic weapons/armor. Single request solvable by a weapon.
+    D = 2  # One adventurer, no weapons/armor. Multiple simple requests.
+    C = 3  # One adventurer with weapons/armor. Multiple requests solvable by weapons.
+    B = 4  # Party of adventurers. Multiple independent subtasks.
+    A = 5  # Hero-led. Multiple subtasks with dependencies between them.
+    S = 6  # Party led by a hero. Subtasks requiring advanced reasoning or skills.
 
 
 class QuestStatus(enum.StrEnum):

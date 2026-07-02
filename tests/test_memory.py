@@ -139,19 +139,22 @@ class TestGuildPersistsMemory:
                 '["general"]',  # refine talents
                 '{"title": "Scrape", "description": "Build a scraper", '
                 '"acceptance_criteria": ["Works"]}',  # receptionist intake
-                '["general"]',  # assess talents
-                "no",  # plan_quest — not composite
+                '{"rank": "E", "adventurers": []}',  # triage → simple path
                 "Scraper built and tested.",  # adventurer execution
                 '{"accepted": true}',  # verify result
+                '{"summary": "Scraper quest went well", "tags": ["success"], '
+                '"lessons_learned": ["Keep scraping simple"]}',  # librarian analyze
+                "- Keep scraping simple",  # chronicle update
             ]
         )
         guild = (
             GuildBuilder()
             .with_llm_provider(mock_llm)
             .register_adventurer(GeneralAdventurer)
+            .with_settings(enable_observations=True)
             .build()
         )
-        result = await guild.post_quest("Build a web scraper")
+        result = await guild.run_quest("Build a web scraper")
         assert result.success is True
 
         store = guild._store
@@ -170,4 +173,139 @@ class TestGuildPersistsMemory:
         assert persisted is not None
         assert persisted["success"] is True
 
+        # Librarian observation was persisted to the store (on-demand queryable).
+        observations = await store.get_observations(quest_id=result.quest_id)
+        assert observations, "expected a persisted librarian observation"
+
         await guild.close()
+
+
+class TestObservationStorage:
+    async def test_save_and_get_observations(self, store: SQLiteStore) -> None:
+        quest = _quest()
+        await store.save_quest(quest)
+        await store.save_observation(
+            obs_id="obs-1",
+            quest_id=quest.id,
+            summary="Quest succeeded cleanly.",
+            tags=["success", "talent:general"],
+            lessons_learned=["Kept it simple."],
+        )
+        obs = await store.get_observations(quest_id=quest.id)
+        assert len(obs) == 1
+        assert obs[0]["summary"] == "Quest succeeded cleanly."
+        assert "success" in obs[0]["tags"]
+        assert obs[0]["lessons_learned"] == ["Kept it simple."]
+
+    async def test_librarian_persists_and_reads_on_demand(self, store: SQLiteStore) -> None:
+        from guildmaster_ai.adventurers.librarian import Librarian
+        from guildmaster_ai.core.messages import QuestResult
+
+        quest = _quest()
+        await store.save_quest(quest)
+        librarian = Librarian(llm=None, store=store)  # rule-based analysis
+        result = QuestResult(sender="adv", quest_id=quest.id, success=True, summary="ok")
+        await librarian.archive(quest, result)
+
+        # recent_observations reads back from the store, not the in-memory list.
+        fetched = await librarian.recent_observations(quest_id=quest.id)
+        assert fetched
+        assert fetched[0]["quest_id"] == quest.id
+
+
+class TestChronicle:
+    async def test_archive_updates_chronicle(self, store: SQLiteStore) -> None:
+        """Archiving folds lessons into the rolling chronicle summary."""
+        from guildmaster_ai.adventurers.librarian import Librarian
+        from guildmaster_ai.core.messages import QuestResult
+
+        quest = _quest()
+        await store.save_quest(quest)
+        librarian = Librarian(llm=None, store=store)  # rule-based chronicle merge
+        result = QuestResult(
+            sender="adv",
+            quest_id=quest.id,
+            success=False,
+            summary="failed",
+            failure_reason="timeout",
+        )
+        await librarian.archive(quest, result)
+
+        chronicle = await librarian.get_chronicle()
+        assert chronicle, "expected a non-empty chronicle after archival"
+
+        # The chronicle survives a fresh librarian instance (persisted state).
+        fresh = Librarian(llm=None, store=store)
+        assert await fresh.get_chronicle() == chronicle
+
+    async def test_chronicle_empty_without_history(self, store: SQLiteStore) -> None:
+        from guildmaster_ai.adventurers.librarian import Librarian
+
+        librarian = Librarian(llm=None, store=store)
+        assert await librarian.get_chronicle() == ""
+
+    async def test_chronicle_is_capped(self, store: SQLiteStore) -> None:
+        from guildmaster_ai.adventurers.librarian import Librarian
+        from guildmaster_ai.core.messages import QuestObservation
+
+        librarian = Librarian(llm=None, store=store)
+        obs = QuestObservation(
+            sender="librarian",
+            quest_id="q",
+            summary="s",
+            lessons_learned=["x" * 500 for _ in range(10)],
+        )
+        await librarian._update_chronicle(obs)
+        assert len(await librarian.get_chronicle()) <= 2000
+
+
+class TestBackgroundArchivalAndWiring:
+    async def test_background_archival_completes_on_close(self) -> None:
+        mock_llm = MockChatModel(response_content="Done.")
+        guild = (
+            GuildBuilder()
+            .with_llm_provider(mock_llm)
+            .register_adventurer(GeneralAdventurer)
+            .with_settings(
+                background_archival=True,
+                enable_vector_store=False,
+                enable_observations=True,
+            )
+            .build()
+        )
+        result = await guild.run_quest("A backgrounded quest")
+        assert result.success is True
+
+        # Archival was scheduled off the request path; draining completes it
+        # while the store is still open so we can observe the persisted result.
+        await guild._drain_background()
+        observations = await guild._store.get_observations(quest_id=result.quest_id)
+        assert observations, "background archival should have persisted an observation"
+
+        await guild.close()
+
+    def test_vector_store_wired_when_enabled(self) -> None:
+        mock_llm = MockChatModel()
+        guild = (
+            GuildBuilder()
+            .with_llm_provider(mock_llm)
+            .register_adventurer(GeneralAdventurer)
+            .with_settings(enable_vector_store=True, enable_observations=True)
+            .build()
+        )
+        # The librarian has full access to both stores when the VS is enabled.
+        assert guild._vector_store is not None
+        assert guild._librarian._vector_store is not None
+        assert guild._librarian._store is guild._store
+
+    def test_vector_store_absent_when_disabled(self) -> None:
+        mock_llm = MockChatModel()
+        guild = (
+            GuildBuilder()
+            .with_llm_provider(mock_llm)
+            .register_adventurer(GeneralAdventurer)
+            .with_settings(enable_vector_store=False)
+            .build()
+        )
+        assert guild._vector_store is None
+        assert guild._librarian._vector_store is None

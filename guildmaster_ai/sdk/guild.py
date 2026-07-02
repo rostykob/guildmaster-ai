@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from typing import Any
 from uuid import uuid4
 
+import anyio
+from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from pydantic import BaseModel, Field
 
 from guildmaster_ai.adventurers.base_adventurer import BaseAdventurer
@@ -15,11 +18,19 @@ from guildmaster_ai.adventurers.guildmaster import Guildmaster
 from guildmaster_ai.adventurers.librarian import Librarian
 from guildmaster_ai.adventurers.receptionist import Receptionist
 from guildmaster_ai.config.settings import GuildSettings
-from guildmaster_ai.core.messages import AdventurerProfile, QuestPlan, QuestResult
-from guildmaster_ai.core.party import Party
-from guildmaster_ai.core.quest import Quest, QuestStatus
+from guildmaster_ai.core.messages import (
+    AdventurerProfile,
+    QuestDraft,
+    QuestPlan,
+    QuestResult,
+    QuestStatusReport,
+    QuestTicket,
+)
+from guildmaster_ai.core.party import Party, PartyMember
+from guildmaster_ai.core.quest import Quest, QuestRank, QuestStatus
 from guildmaster_ai.core.quest_board import QuestBoard
 from guildmaster_ai.llm.types import GuildLLM
+from guildmaster_ai.memory.chroma_store import ChromaStore
 from guildmaster_ai.memory.sqlite_store import SQLiteStore
 from guildmaster_ai.scrolls.catalog import ScrollCatalog
 
@@ -54,8 +65,28 @@ class Guild:
         self._llm = llm
         self._scroll_catalog = scroll_catalog
         self._board = QuestBoard()
-        self._librarian = Librarian(llm=llm)
-        self._guildmaster = Guildmaster(llm=llm, librarian=self._librarian)
+
+        # Persistent storage — the librarian gets full access to both the
+        # metadata store (SQLite) and the vector store (Chroma).
+        self.settings.guild_home.mkdir(parents=True, exist_ok=True)
+        self._store = SQLiteStore(db_path=str(self.settings.db_path))
+        self._store_initialized = False
+        # The vector store only serves observation recall, so it is created
+        # solely when observations are enabled — Chroma initialisation (and its
+        # embedding backend) is expensive and pointless otherwise.
+        self._vector_store: ChromaStore | None = None
+        if self.settings.enable_observations and self.settings.enable_vector_store:
+            self._vector_store = ChromaStore(
+                collection_name="guild_knowledge",
+                persist_directory=str(self.settings.chroma_path),
+            )
+
+        self._librarian = Librarian(
+            llm=llm,
+            vector_store=self._vector_store,
+            store=self._store,
+        )
+        self._guildmaster = Guildmaster(llm=llm)
         self._receptionist = Receptionist(
             llm=llm,
             max_rounds=self.settings.max_clarification_rounds,
@@ -63,15 +94,13 @@ class Guild:
         self._guard: BaseGuard | None = None
         self._talents_refined = False
 
+        # Background archival tasks (see _schedule_archival / _drain_background).
+        self._background_tasks: set[asyncio.Task[Any]] = set()
+
         # Cumulative counters — quests move to ARCHIVED after completion,
         # so counting by current status always yields 0 for COMPLETED/FAILED.
         self._completed_count = 0
         self._failed_count = 0
-
-        # Persistent storage
-        self.settings.guild_home.mkdir(parents=True, exist_ok=True)
-        self._store = SQLiteStore(db_path=str(self.settings.db_path))
-        self._store_initialized = False
 
         # Configure logging for the guildmaster namespace
         self._configure_logging()
@@ -81,6 +110,20 @@ class Guild:
         # (draft, in_progress, failed, retrying, archived, etc.).
         self._quests: dict[str, Quest] = {}
         self._results: dict[str, QuestResult] = {}
+
+        # Background quest execution — submissions flow through an anyio
+        # memory stream into a worker task that runs quests concurrently
+        # (bounded by settings.max_concurrent_quests). One completion event
+        # per quest lets callers await results via wait_for_quest().
+        self._submit_stream: MemoryObjectSendStream[str] | None = None
+        self._intake_stream: MemoryObjectReceiveStream[str] | None = None
+        self._worker_task: asyncio.Task[None] | None = None
+        self._completion_events: dict[str, asyncio.Event] = {}
+        self._prepare_lock = asyncio.Lock()
+
+        # Wire the receptionist to the registries so it can answer
+        # check_status(quest_id) queries.
+        self._receptionist.connect_registry(self.get_quest, self.get_result)
 
     def _configure_logging(self) -> None:
         """Set up the guildmaster logger based on settings."""
@@ -144,60 +187,175 @@ class Guild:
 
     # ── Quest lifecycle ────────────────────────────────────────────────
 
-    async def post_quest(self, request: str) -> QuestResult:
+    async def post_quest(self, request: str) -> QuestTicket:
+        """Submit a quest and return immediately with a submission ticket.
+
+        Execution happens in the background: the quest id is pushed onto an
+        anyio memory stream consumed by the guild's worker, which runs quests
+        concurrently (bounded by ``settings.max_concurrent_quests``). Track
+        progress with ``check_quest_status()`` / ``receptionist.check_status()``
+        and await the outcome with ``wait_for_quest()`` — or use
+        ``run_quest()`` for the submit-and-wait convenience path.
+        """
+        logger.info("=== New quest request: %s ===", request[:100])
+        self._ensure_worker()
+        assert self._submit_stream is not None
+
+        quest = Quest(title=request[:80], description=request)
+        self._quests[quest.id] = quest
+        self._completion_events[quest.id] = asyncio.Event()
+        await self._submit_stream.send(quest.id)
+        logger.info("Quest submitted: %s (%r)", quest.id[:8], quest.title)
+        return QuestTicket(sender="receptionist", quest_id=quest.id, title=quest.title)
+
+    async def wait_for_quest(self, quest_id: str, timeout: float | None = None) -> QuestResult:
+        """Wait until the background execution of *quest_id* finishes.
+
+        Raises ``KeyError`` for unknown quests and ``TimeoutError`` when
+        *timeout* (seconds) elapses first.
+        """
+        if quest_id not in self._quests:
+            raise KeyError(f"Quest {quest_id!r} not found in this guild")
+        event = self._completion_events.get(quest_id)
+        if event is not None and not event.is_set():
+            if timeout is not None:
+                with anyio.fail_after(timeout):
+                    await event.wait()
+            else:
+                await event.wait()
+        result = self._results.get(quest_id)
+        if result is None:
+            raise KeyError(f"Quest {quest_id!r} has no recorded result")
+        return result
+
+    async def run_quest(self, request: str) -> QuestResult:
+        """Submit a quest and wait for its result (post_quest + wait_for_quest)."""
+        ticket = await self.post_quest(request)
+        return await self.wait_for_quest(ticket.quest_id)
+
+    def check_quest_status(self, quest_id: str) -> QuestStatusReport:
+        """Return the receptionist's status report for a submitted quest."""
+        return self._receptionist.check_status(quest_id)
+
+    # ── Background worker ──────────────────────────────────────────────
+
+    def _ensure_worker(self) -> None:
+        """Start the background quest worker on first submission (idempotent)."""
+        if self._worker_task is not None and not self._worker_task.done():
+            return
+        send, receive = anyio.create_memory_object_stream[str](max_buffer_size=math.inf)
+        self._submit_stream = send
+        self._intake_stream = receive
+        self._worker_task = asyncio.create_task(self._quest_worker(receive))
+
+    async def _quest_worker(self, intake: MemoryObjectReceiveStream[str]) -> None:
+        """Consume submitted quest ids and execute them concurrently."""
+        limiter = anyio.CapacityLimiter(max(1, self.settings.max_concurrent_quests))
+
+        async def _run_limited(quest_id: str) -> None:
+            async with limiter:
+                await self._process_quest(quest_id)
+
+        async with anyio.create_task_group() as tg, intake:
+            async for quest_id in intake:
+                tg.start_soon(_run_limited, quest_id)
+
+    async def _process_quest(self, quest_id: str) -> None:
+        """Execute one quest end-to-end, always recording a result + event."""
+        quest = self._quests[quest_id]
+        try:
+            result = await self._execute_quest_flow(quest)
+        except Exception as exc:
+            logger.exception("Quest %s crashed", quest_id[:8])
+            self._fail_quest_silently(quest)
+            result = QuestResult(
+                sender="guild",
+                quest_id=quest_id,
+                success=False,
+                summary=f"Quest crashed: {exc}",
+                failure_reason="internal_error",
+            )
+        self._results[quest_id] = result
+        event = self._completion_events.get(quest_id)
+        if event is not None:
+            event.set()
+        logger.info("=== Quest %s finished: success=%s ===", quest_id[:8], result.success)
+
+    @staticmethod
+    def _fail_quest_silently(quest: Quest) -> None:
+        """Best-effort move of a crashed quest into FAILED state."""
+        try:
+            if quest.status == QuestStatus.ASSIGNED:
+                quest.transition(QuestStatus.IN_PROGRESS, "guild")
+            if quest.status == QuestStatus.IN_PROGRESS:
+                quest.transition(QuestStatus.FAILED, "guild")
+        except Exception:
+            logger.debug("Could not transition crashed quest %s to FAILED", quest.id[:8])
+
+    async def _execute_quest_flow(self, quest: Quest) -> QuestResult:
         """Run the full quest lifecycle: Plan → Decompose → Execute → Verify → Archive.
 
         Simple quests are handled by a single adventurer. Complex quests are
         decomposed into subtasks and distributed across a party.
         """
-        logger.info("=== New quest request: %s ===", request[:100])
+        # Prepare storage + adventurer talents (runs once; see prepare()).
+        await self.prepare()
 
-        # Refine adventurer talents via LLM on first quest
-        if not self._talents_refined:
-            await self._ensure_store()
-            await self._restore_guild_counters()
-            restored = await self._restore_talents_if_unchanged()
-            if not restored:
-                await self._guildmaster.refine_all_talents()
-                await self._persist_talents()
-            self._talents_refined = True
-
-        # Phase 1: Planning
+        # Phase 1: Planning.
+        # Intake refines title + acceptance criteria; disable via
+        # settings.refine_requests to save the LLM call for simple pipelines.
         logger.info("Phase 1: Planning")
-        draft = await self._receptionist.intake(request)
+        if self.settings.refine_requests:
+            draft = await self._receptionist.intake(quest.description)
+        else:
+            draft = QuestDraft(title=quest.title, description=quest.description)
 
-        # Guildmaster determines required talents (not the receptionist)
-        if not draft.required_talents:
-            talents = await self._guildmaster.assess_quest_talents(draft)
-            draft.required_talents = talents
-            logger.debug("Guildmaster assessed talents: %s", talents)
+        # The chronicle is the librarian's rolling lessons summary — a cheap
+        # stored string, only maintained when observations are enabled.
+        chronicle = ""
+        if self.settings.enable_observations:
+            chronicle = await self._librarian.get_chronicle()
 
-        feasibility = self._guildmaster.check_feasibility(draft)
+        # One triage call replaces talent extraction, feasibility checking,
+        # and adventurer ranking: the guildmaster matches the quest against
+        # the roster it already knows and returns rank + candidates.
+        triage = await self._guildmaster.triage_quest(draft, chronicle=chronicle)
+        candidates = [
+            adv
+            for adv in (self._guildmaster.get_adventurer(aid) for aid in triage.adventurer_ids)
+            if adv is not None
+        ]
 
-        if not feasibility.feasible:
-            logger.warning("Quest not feasible: missing %s", feasibility.missing_talents)
+        if triage.infeasible_reason or not candidates:
+            reason = triage.infeasible_reason or "No adventurers available"
+            logger.warning("Quest not feasible: %s", reason)
+            quest.transition(QuestStatus.POSTED, "quest_board")
+            quest.transition(
+                QuestStatus.ARCHIVED,
+                "guildmaster",
+                {"reason": "not_feasible"},
+            )
+            await self._store.save_quest(quest)
             return QuestResult(
                 sender="guild",
-                quest_id="",
+                quest_id=quest.id,
                 success=False,
                 summary="Quest is not feasible",
-                data={"missing_talents": feasibility.missing_talents},
-                failure_reason=(
-                    f"No adventurers with required talents: {feasibility.missing_talents}"
-                ),
+                data={},
+                failure_reason=reason,
             )
 
-        quest = Quest(
-            title=draft.title,
-            description=draft.description,
-            required_talents=draft.required_talents,
-            rank=feasibility.recommended_rank,
-            acceptance_criteria=draft.acceptance_criteria,
+        # Fold the refined draft back into the submitted quest.
+        quest.title = draft.title or quest.title
+        quest.rank = triage.rank
+        quest.acceptance_criteria = draft.acceptance_criteria
+        logger.info(
+            "Quest triaged: %s (%r) rank=%s candidates=%d",
+            quest.id[:8],
+            quest.title,
+            quest.rank.name,
+            len(candidates),
         )
-
-        # Register in guild quest registry
-        self._quests[quest.id] = quest
-        logger.info("Quest created: %s (%r)", quest.id[:8], quest.title)
 
         # Persist quest to DB
         await self._store.save_quest(quest)
@@ -205,59 +363,83 @@ class Guild:
         # Post to board
         self._board.post(quest)
 
-        # Phase 1.5: Decomposition
-        plan = await self._guildmaster.plan_quest(quest)
-        if plan and len(plan.subtasks) > 1:
-            quest.is_composite = True
-            logger.info("Quest %s is composite — %d subtasks", quest.id[:8], len(plan.subtasks))
+        # Phase 1.5: Routing by rank.
+        # Ranks below B are single-adventurer work — skip the decomposition LLM
+        # call entirely. Rank A+ prefers a hero (who re-plans internally, so no
+        # guildmaster decomposition is needed); rank B forms a manual party.
+        result = await self._route_quest(quest, candidates, chronicle)
 
-            # Use hero-led path if a BaseHero is available, else manual party
-            hero = self._find_hero_for_quest(quest)
-            if hero is not None:
-                result = await self._execute_hero_led_quest(quest, plan, hero)
-            else:
-                result = await self._execute_manual_party_quest(quest, plan)
-        else:
-            result = await self._execute_simple_quest(quest)
-
-        # Phase 4: Archival
+        # Phase 4: Archival. The quest is archived synchronously so callers see
+        # the final state immediately; librarian observation analysis is
+        # disconnected from the main flow unless enable_observations is set.
         logger.info("Phase 4: Archival")
-        await self._librarian.archive(quest, result)
         quest.transition(QuestStatus.ARCHIVED, "librarian")
-
-        self._results[quest.id] = result
 
         # Persist final state
         await self._store.save_quest(quest)
         await self._persist_result(quest.id, result)
         await self._persist_guild_counters()
 
-        logger.info("=== Quest %s finished: success=%s ===", quest.id[:8], result.success)
+        if self.settings.enable_observations:
+            await self._schedule_archival(quest, result)
+
         return result
 
-    async def _execute_simple_quest(self, quest: Quest) -> QuestResult:
-        """Execute a quest with a single adventurer (original path)."""
+    async def _route_quest(
+        self,
+        quest: Quest,
+        candidates: list[BaseAdventurer],
+        chronicle: str = "",
+    ) -> QuestResult:
+        """Pick an execution strategy for *quest* from its triaged rank.
+
+        *candidates* is the triage's best-first adventurer list (never empty).
+
+        - ``< B`` → single adventurer: the top candidate (no extra LLM call).
+        - ``>= A`` with a hero among candidates → hero-led (re-plans internally).
+        - ``B`` (or ``A``/``S`` without a hero) → decompose into a manual party.
+        """
+        if quest.rank < QuestRank.B:
+            return await self._execute_simple_quest(quest, candidates[0])
+
+        quest.is_composite = True
+
+        if quest.rank >= QuestRank.A:
+            hero = next((adv for adv in candidates if isinstance(adv, BaseHero)), None)
+            if hero is not None:
+                logger.info("Quest %s rank %s — hero-led", quest.id[:8], quest.rank.name)
+                return await self._execute_hero_led_quest(quest, hero, candidates)
+
+        plan = await self._guildmaster.plan_quest(quest, chronicle=chronicle)
+        if plan is not None and len(plan.subtasks) > 1:
+            logger.info(
+                "Quest %s rank %s — manual party, %d subtasks",
+                quest.id[:8],
+                quest.rank.name,
+                len(plan.subtasks),
+            )
+            return await self._execute_manual_party_quest(quest, plan)
+
+        # Decomposition declined or produced a single task — treat as simple.
+        quest.is_composite = False
+        return await self._execute_simple_quest(quest, candidates[0])
+
+    async def _execute_simple_quest(
+        self,
+        quest: Quest,
+        leader_adv: BaseAdventurer,
+    ) -> QuestResult:
+        """Execute a quest with the triage-chosen adventurer (no extra LLM call)."""
         logger.info("Phase 2: Execution (simple)")
-        await self._guildmaster.assign_quest(quest, self._board)
-        adventurers = self._guildmaster.match_adventurers(quest)
+        party = Party(
+            name=f"Party for {quest.title}",
+            leader_id=leader_adv.id,
+            quest_id=quest.id,
+            members=[PartyMember(adventurer_id=leader_adv.id, role="leader")],
+        )
+        self._board.assign(quest.id, party.id, actor="guildmaster")
 
-        if not adventurers:
-            logger.warning("No adventurers matched quest %s", quest.id[:8])
-            quest.transition(
-                QuestStatus.FAILED,
-                "guildmaster",
-                {"reason": "No adventurers matched"},
-            )
-            return QuestResult(
-                sender="guild",
-                quest_id=quest.id,
-                success=False,
-                summary="No adventurers available",
-                data={},
-                failure_reason="No adventurers matched the quest requirements",
-            )
-
-        leader = adventurers[0].spawn()
+        leader = leader_adv.spawn()
         leader_label = leader.name or leader.id
         logger.info("Quest leader: %s", leader_label)
         quest.transition(QuestStatus.IN_PROGRESS, leader_label)
@@ -265,33 +447,24 @@ class Guild:
 
         return await self._verify_and_complete(quest, result)
 
-    def _find_hero_for_quest(self, quest: Quest) -> BaseHero | None:
-        """Find a registered BaseHero eligible for this quest."""
-        matched = self._guildmaster.match_adventurers(quest)
-        for adv in matched:
-            if isinstance(adv, BaseHero):
-                return adv
-        return None
-
     async def _execute_hero_led_quest(
         self,
         quest: Quest,
-        plan: QuestPlan,  # kept for API consistency with _execute_manual_party_quest
         hero: BaseHero,
+        candidates: list[BaseAdventurer],
     ) -> QuestResult:
-        """Hero-led execution: recruit matched adventurers as subagents.
+        """Hero-led execution: recruit the other triage candidates as subagents.
 
-        The hero's deep agent handles delegation internally — the plan is not
-        used directly here (the hero re-decomposes via its own planning).
-        This is the preferred path when a BaseHero is available; the manual
-        party path is the fallback.
+        The hero's deep agent decomposes and delegates internally, so no
+        guildmaster ``plan_quest`` call is made for this path. This is the
+        preferred strategy for rank A+ quests when a hero is available; the
+        manual party path is the fallback.
         """
         logger.info("Phase 2: Execution (hero-led)")
-        matched = self._guildmaster.match_adventurers(quest)
 
-        # Spawn a fresh hero and recruit matched adventurers as members
+        # Spawn a fresh hero and recruit the remaining candidates as members
         leader = hero.spawn()
-        for adv in matched:
+        for adv in candidates:
             if adv.id != hero.id:
                 leader.recruit(adv.spawn())
 
@@ -683,7 +856,28 @@ class Guild:
         """List registered adventurer profiles."""
         return self._guildmaster.roster
 
+    @property
+    def receptionist(self) -> Receptionist:
+        """The guild's receptionist — supports ``check_status(quest_id)``."""
+        return self._receptionist
+
     # ── Persistent storage ────────────────────────────────────────────
+
+    async def prepare(self) -> None:
+        """Open storage, restore prior state, and assign adventurer talents.
+
+        Idempotent. Runs automatically on the first quest, but may be called
+        explicitly at setup time to front-load talent assessment. Talents are
+        assessed at most once per unique adventurer configuration and cached in
+        the store, so later runs reuse them rather than re-evaluating.
+        """
+        async with self._prepare_lock:
+            if self._talents_refined:
+                return
+            await self._ensure_store()
+            await self._restore_guild_counters()
+            await self._prepare_talents()
+            self._talents_refined = True
 
     async def _ensure_store(self) -> None:
         """Lazily initialize the SQLite store on first use."""
@@ -691,35 +885,51 @@ class Guild:
             await self._store.initialize()
             self._store_initialized = True
 
-    async def _restore_talents_if_unchanged(self) -> bool:
-        """Try to restore talents from DB if all adventurer configs match."""
-        for adv in self._guildmaster._roster.values():
-            cached = await self._store.get_adventurer_talents(adv.config_hash)
-            if cached is None:
-                return False
+    async def _prepare_talents(self) -> None:
+        """Assign talents to every adventurer, assessing each config at most once.
 
-        # All matched — restore talents
+        Adventurers are grouped by ``config_hash``. For each unique configuration
+        the cached talents are restored from the store when present (permanent
+        reuse — never re-evaluated); otherwise the configuration is assessed once
+        via the LLM (all unique configs concurrently) and the result is persisted
+        and applied to every instance sharing that configuration.
+        """
+        by_config: dict[str, list[BaseAdventurer]] = {}
         for adv in self._guildmaster._roster.values():
-            cached = await self._store.get_adventurer_talents(adv.config_hash)
+            by_config.setdefault(adv.config_hash, []).append(adv)
+
+        to_assess: list[tuple[str, list[BaseAdventurer]]] = []
+        for config_hash, advs in by_config.items():
+            cached = await self._store.get_adventurer_talents(config_hash)
             if cached is not None:
-                adv._talents.clear()
-                adv.grant_talents(cached)
-                logger.debug(
-                    "Restored talents for %s from DB: %s",
-                    adv.name or adv.id,
-                    cached,
-                )
-        logger.info("Restored talents from DB — skipping LLM assessment")
-        return True
+                for adv in advs:
+                    adv._talents.clear()
+                    adv.grant_talents(cached)
+            else:
+                to_assess.append((config_hash, advs))
 
-    async def _persist_talents(self) -> None:
-        """Save current adventurer talents to the DB."""
-        for adv in self._guildmaster._roster.values():
+        if not to_assess:
+            logger.info("Restored all adventurer talents from store — no LLM assessment")
+            return
+        if self._llm is None:
+            return
+
+        reps = [advs[0] for _, advs in to_assess]
+        assessed = await asyncio.gather(
+            *(self._guildmaster.assess_talents_for(rep) for rep in reps)
+        )
+        for (config_hash, advs), talents in zip(to_assess, assessed, strict=True):
+            for adv in advs:
+                adv._talents.clear()
+                adv.grant_talents(talents)
             await self._store.save_adventurer_talents(
-                adv.config_hash,
-                type(adv).__name__,
-                adv.talents,
+                config_hash, type(advs[0]).__name__, talents
             )
+        logger.info(
+            "Assessed %d unique adventurer config(s) via LLM (%d adventurers total)",
+            len(to_assess),
+            len(self._guildmaster._roster),
+        )
 
     async def _run_and_capture(
         self,
@@ -796,10 +1006,45 @@ class Guild:
         if failed is not None:
             self._failed_count = int(failed)
 
+    # ── Background archival ────────────────────────────────────────────
+
+    async def _schedule_archival(self, quest: Quest, result: QuestResult) -> None:
+        """Archive a finished quest, on a background task unless disabled.
+
+        Archival is LLM analysis + memory persistence; keeping it off the
+        request path lets ``post_quest`` return as soon as the quest is archived.
+        Set ``background_archival=False`` to run it inline (deterministic order).
+        """
+        if not self.settings.background_archival:
+            await self._safe_archive(quest, result)
+            return
+        task: asyncio.Task[None] = asyncio.create_task(self._safe_archive(quest, result))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _safe_archive(self, quest: Quest, result: QuestResult) -> None:
+        """Run librarian archival, logging (not raising) any failure."""
+        try:
+            await self._librarian.archive(quest, result)
+        except Exception:
+            logger.exception("Background archival failed for quest %s", quest.id[:8])
+
+    async def _drain_background(self) -> None:
+        """Wait for all outstanding background archival tasks to finish."""
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+
     # ── Lifecycle ──────────────────────────────────────────────────────
 
     async def close(self) -> None:
-        """Close the persistent store and release resources."""
+        """Finish in-flight quests, drain background work, close the store."""
+        if self._submit_stream is not None:
+            await self._submit_stream.aclose()
+            self._submit_stream = None
+        if self._worker_task is not None:
+            await self._worker_task
+            self._worker_task = None
+        await self._drain_background()
         if self._store_initialized:
             await self._store.close()
             self._store_initialized = False

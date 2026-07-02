@@ -71,6 +71,11 @@ def isolated_guild_home(
     test hermetic and avoids polluting the working tree.
     """
     monkeypatch.setenv("GUILD_GUILD_HOME", str(tmp_path / "guild_home"))
+    # Run archival inline and skip the Chroma vector store so mocked-LLM call
+    # sequences stay deterministic and tests don't spin up embedding backends.
+    # Dedicated tests exercise the background + vector-store paths explicitly.
+    monkeypatch.setenv("GUILD_BACKGROUND_ARCHIVAL", "false")
+    monkeypatch.setenv("GUILD_ENABLE_VECTOR_STORE", "false")
 
 
 @pytest.fixture

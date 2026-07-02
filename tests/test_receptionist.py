@@ -31,6 +31,22 @@ class TestReceptionist:
         assert draft.required_talents == []
 
     @pytest.mark.asyncio
+    async def test_intake_preserves_request_and_captures_constraint(self) -> None:
+        # Even if the LLM paraphrases the request in "description", the draft
+        # must keep the user's original wording (it's what the adventurer runs)
+        # and surface output constraints as acceptance criteria.
+        llm = MockChatModel(
+            response_content='{"title": "Paris, the Capital", '
+            '"description": "Find the capital city of France.", '
+            '"acceptance_criteria": ["Reply in one word"]}'
+        )
+        r = Receptionist(llm=llm)
+        draft = await r.intake("Capital of France? One word.")
+        assert draft.description == "Capital of France? One word."
+        assert draft.acceptance_criteria == ["Reply in one word"]
+        assert draft.title == "Paris, the Capital"
+
+    @pytest.mark.asyncio
     async def test_intake_with_clarification(self) -> None:
         r = Receptionist()  # no LLM — uses basic draft
 

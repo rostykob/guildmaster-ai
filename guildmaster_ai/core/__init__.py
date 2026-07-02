@@ -1,6 +1,7 @@
 """Core domain models — no LLM logic here."""
 
 from guildmaster_ai.core.exceptions import (
+    AdventurerDefeatedError,
     ArmorBlockedError,
     GuildmasterError,
     InvalidQuestTransitionError,
@@ -19,10 +20,12 @@ from guildmaster_ai.core.messages import (
     QuestClarificationRequest,
     QuestClarificationResponse,
     QuestDraft,
-    QuestFeasibilityReport,
     QuestObservation,
     QuestPlan,
     QuestResult,
+    QuestStatusReport,
+    QuestTicket,
+    QuestTriage,
     SubtaskSpec,
 )
 from guildmaster_ai.core.party import Party, PartyMember
@@ -30,6 +33,7 @@ from guildmaster_ai.core.quest import Quest, QuestRank, QuestStatus
 from guildmaster_ai.core.utils import parse_llm_json
 
 __all__ = [
+    "AdventurerDefeatedError",
     "AdventurerProfile",
     "ArmorBlockedError",
     "BaseMessage",
@@ -48,12 +52,14 @@ __all__ = [
     "QuestDecompositionError",
     "QuestDraft",
     "QuestFailedError",
-    "QuestFeasibilityReport",
     "QuestObservation",
     "QuestPlan",
     "QuestRank",
     "QuestResult",
     "QuestStatus",
+    "QuestStatusReport",
+    "QuestTicket",
+    "QuestTriage",
     "ScrollValidationError",
     "SubtaskSpec",
     "parse_llm_json",

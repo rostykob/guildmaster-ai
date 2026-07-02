@@ -12,6 +12,8 @@ from guildmaster_ai.core.messages import (
     QuestDraft,
     QuestPlan,
     QuestResult,
+    QuestStatusReport,
+    QuestTicket,
     SubtaskSpec,
 )
 from guildmaster_ai.core.quest import Quest, QuestRank, QuestStatus
@@ -42,6 +44,8 @@ __all__ = [
     "QuestRank",
     "QuestResult",
     "QuestStatus",
+    "QuestStatusReport",
+    "QuestTicket",
     "Scroll",
     "ScrollCatalog",
     "SubtaskSpec",

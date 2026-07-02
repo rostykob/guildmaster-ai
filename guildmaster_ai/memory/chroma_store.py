@@ -38,6 +38,11 @@ class ChromaStore:
             name=self._collection_name,
         )
 
+    async def _ensure(self) -> None:
+        """Initialize the collection on first use if not already done."""
+        if self._collection is None:
+            await self.initialize()
+
     async def store(
         self,
         doc_id: str,
@@ -45,8 +50,8 @@ class ChromaStore:
         metadata: dict[str, Any],
     ) -> None:
         """Add or update a document in the collection."""
-        if self._collection is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
+        await self._ensure()
+        assert self._collection is not None
 
         await asyncio.to_thread(
             self._collection.upsert,
@@ -62,8 +67,8 @@ class ChromaStore:
         where: dict | None = None,
     ) -> list[dict[str, Any]]:
         """Query the collection and return matching documents."""
-        if self._collection is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
+        await self._ensure()
+        assert self._collection is not None
 
         kwargs: dict[str, Any] = {
             "query_texts": [query_text],

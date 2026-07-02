@@ -25,7 +25,7 @@ class TestGuildIntegration:
             .build()
         )
 
-        result = await guild.post_quest("Tell me about Python")
+        result = await guild.run_quest("Tell me about Python")
         assert result.quest_id != ""
         assert result.summary != ""
 
@@ -33,7 +33,7 @@ class TestGuildIntegration:
     async def test_no_adventurers_fails(self) -> None:
         mock_llm = MockChatModel()
         guild = Guild(llm=mock_llm)
-        result = await guild.post_quest("Do something impossible")
+        result = await guild.run_quest("Do something impossible")
         assert result.success is False
 
     def test_builder_requires_provider(self) -> None:
@@ -69,7 +69,7 @@ class TestGuildIntegration:
         assert info_before.completed == 0
         assert len(info_before.adventurers) == 1
 
-        await guild.post_quest("Test quest")
+        await guild.run_quest("Test quest")
 
         info_after = guild.info
         assert info_after.total_quests == 1
@@ -95,7 +95,7 @@ class TestGuildIntegration:
             .register_adventurer(GeneralAdventurer)
             .build()
         )
-        result = await guild.post_quest("Lookup test")
+        result = await guild.run_quest("Lookup test")
         quest = guild.get_quest(result.quest_id)
         assert quest.title  # non-empty
         assert quest.id == result.quest_id
@@ -109,7 +109,7 @@ class TestGuildIntegration:
             .register_adventurer(GeneralAdventurer)
             .build()
         )
-        result = await guild.post_quest("Result test")
+        result = await guild.run_quest("Result test")
         stored = guild.get_result(result.quest_id)
         assert stored is not None
         assert stored.quest_id == result.quest_id
@@ -134,8 +134,8 @@ class TestGuildIntegration:
             .register_adventurer(GeneralAdventurer)
             .build()
         )
-        await guild.post_quest("Quest A")
-        await guild.post_quest("Quest B")
+        await guild.run_quest("Quest A")
+        await guild.run_quest("Quest B")
         assert len(guild.quests) == 2
 
     # ── Complex quest decomposition ──────────────────────────────────
@@ -163,17 +163,18 @@ class TestGuildIntegration:
                 ],
             }
         )
-        # LLM calls: 1-2) refine_all_talents (2 adventurers),
-        # 3) receptionist intake, 4) assess_quest_talents,
-        # 5) plan_quest, 6) subtask 1 exec, 7) subtask 2 exec,
-        # 8) evaluate completion, 9) verify result
+        # LLM calls, in order:
+        # 1) talent assessment (2 identical adventurers → ONE deduped call),
+        # 2) receptionist intake, 3) triage (rank B + candidates),
+        # 4) plan_quest (rank B → decompose), 5) subtask 1, 6) subtask 2,
+        # 7) evaluate completion, 8) verify result.
         mock_llm = MockChatModel(
             responses=[
-                '["general"]',  # refine talents for adventurer 1
-                '["general"]',  # refine talents for adventurer 2
+                '["general"]',  # talent assessment (deduped across both adventurers)
                 '{"title": "Complex quest", "description": "Do complex things", '
                 '"acceptance_criteria": ["Done"]}',
-                '["general"]',
+                # triage → party rank; empty candidate list falls back to full roster
+                '{"rank": "B", "adventurers": []}',
                 decompose_response,
                 "Part 1 result",
                 "Part 2 result",
@@ -187,7 +188,7 @@ class TestGuildIntegration:
             .register_adventurer(GeneralAdventurer, count=2)
             .build()
         )
-        result = await guild.post_quest("Do something complex")
+        result = await guild.run_quest("Do something complex")
         assert result.success is True
         assert result.data.get("subtask_count") == 2
 
@@ -211,13 +212,13 @@ class TestGuildIntegration:
         )
         mock_llm = MockChatModel(
             responses=[
-                # refine talents (1 adventurer)
+                # talent assessment (1 adventurer)
                 '["general"]',
                 # receptionist
                 '{"title": "Retry quest", "description": "Test retry", '
                 '"acceptance_criteria": ["Done"]}',
-                # assess_quest_talents
-                '["general"]',
+                # triage → party rank so the quest decomposes
+                '{"rank": "B", "adventurers": []}',
                 # plan_quest
                 decompose_response,
                 # subtask 1 exec - success
@@ -245,23 +246,21 @@ class TestGuildIntegration:
         # The mock returns responses in order, so "Bad result" for subtask 2
         # will be treated as success by the default execute() (no tool calls = success)
         # We need to handle this differently - the evaluate step handles the logic
-        result = await guild.post_quest("Do something with retry")
+        result = await guild.run_quest("Do something with retry")
         assert result.success is True
 
     @pytest.mark.asyncio
     async def test_simple_quest_unchanged(self) -> None:
-        """A simple quest follows the original path when plan_quest returns None."""
+        """A low-rank quest takes the single-adventurer path with no plan_quest call."""
         mock_llm = MockChatModel(
             responses=[
-                # refine talents (1 adventurer)
+                # talent assessment (1 adventurer)
                 '["general"]',
                 # receptionist
                 '{"title": "Simple quest", "description": "Just do it", '
                 '"acceptance_criteria": ["Done"]}',
-                # assess_quest_talents
-                '["general"]',
-                # plan_quest - no decomposition
-                '{"decompose": false}',
+                # triage → low rank, so no decomposition is attempted
+                '{"rank": "E", "adventurers": []}',
                 # adventurer execute
                 "Simple result",
                 # verify result
@@ -274,7 +273,7 @@ class TestGuildIntegration:
             .register_adventurer(GeneralAdventurer)
             .build()
         )
-        result = await guild.post_quest("Do something simple")
+        result = await guild.run_quest("Do something simple")
         assert result.success is True
         quest = guild.get_quest(result.quest_id)
         assert quest.is_composite is False

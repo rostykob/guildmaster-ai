@@ -8,8 +8,9 @@ from uuid import uuid4
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 
+from guildmaster_ai.adventurers.vitality import VitalityMiddleware
 from guildmaster_ai.armor.base_armor import BaseArmor
-from guildmaster_ai.core.exceptions import ArmorBlockedError
+from guildmaster_ai.core.exceptions import AdventurerDefeatedError, ArmorBlockedError
 from guildmaster_ai.core.messages import AdventurerProfile, QuestResult
 from guildmaster_ai.core.quest import Quest
 from guildmaster_ai.llm.types import GuildLLM
@@ -39,11 +40,19 @@ class BaseAdventurer:
     system_prompt: str = ""
     """The system prompt sent to the LLM.  Set as a class variable or property."""
 
+    DEFAULT_AP: int = 20
+    """Default action points — max tool calls per quest before failing."""
+
+    DEFAULT_HP: int = 3
+    """Default hit points — max tool errors (retries) per quest before failing."""
+
     def __init__(
         self,
         adventurer_id: str | None = None,
         name: str = "",
         llm: GuildLLM | None = None,
+        ap: int | None = None,
+        hp: int | None = None,
     ) -> None:
         # Check for system_prompt — allow property to be resolved after __init__
         has_prompt = isinstance(type(self).__dict__.get("system_prompt"), property) or bool(
@@ -55,6 +64,8 @@ class BaseAdventurer:
             )
         self.id = adventurer_id or str(uuid4())
         self.name = name
+        self.ap = ap if ap is not None else type(self).DEFAULT_AP
+        self.hp = hp if hp is not None else type(self).DEFAULT_HP
         self._llm = llm
         self._weapons: dict[str, BaseWeapon] = {}
         self._armor: list[BaseArmor] = []
@@ -126,7 +137,7 @@ class BaseAdventurer:
         calls this before every quest execution so no mutable state leaks
         between quests.
         """
-        clone = self.__class__(name=self.name, llm=self._llm)
+        clone = self.__class__(name=self.name, llm=self._llm, ap=self.ap, hp=self.hp)
         for weapon in self._weapons.values():
             clone.equip_weapon(weapon)
         for armor_piece in self._armor:
@@ -152,9 +163,13 @@ class BaseAdventurer:
             model=self._llm,
             tools=tools or None,
             system_prompt=self.system_prompt,
-            middleware=list(self._armor),
+            middleware=[*self._armor, self._vitality()],
             name=self.name or self.id,
         )
+
+    def _vitality(self) -> VitalityMiddleware:
+        """Build a fresh AP/HP budget middleware for one quest execution."""
+        return VitalityMiddleware(ap=self.ap, hp=self.hp, adventurer=self.name or self.id)
 
     def _extract_final_text(self, messages: list[Any]) -> str:
         """Extract the final AI text content from agent output messages."""
@@ -208,6 +223,15 @@ class BaseAdventurer:
                 summary=f"Blocked by armor {exc.armor_name}: {exc.message}",
                 failure_reason="armor_blocked",
             )
+        except AdventurerDefeatedError as exc:
+            self._logger.warning("Quest %s failed — %s", quest.id[:8], exc)
+            return QuestResult(
+                sender=self.name or self.id,
+                quest_id=quest.id,
+                success=False,
+                summary=str(exc),
+                failure_reason=f"{exc.stat}_depleted",
+            )
 
         summary = self._extract_final_text(result["messages"])
 
@@ -260,4 +284,6 @@ class BaseAdventurer:
             weapons=list(self._weapons.keys()),
             armor=[a.name for a in self._armor],
             scrolls=[],
+            ap=self.ap,
+            hp=self.hp,
         )

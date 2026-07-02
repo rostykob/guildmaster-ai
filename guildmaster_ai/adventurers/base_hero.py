@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from deepagents import CompiledSubAgent, create_deep_agent
@@ -36,14 +37,21 @@ class BaseHero(BaseAdventurer):
     instructions.  For simple tool-only agents, use :class:`BaseAdventurer`.
     """
 
+    DEFAULT_AP: int = 60
+    """Heroes coordinate members and skills — they get a larger tool budget."""
+
+    DEFAULT_HP: int = 5
+
     def __init__(
         self,
         adventurer_id: str | None = None,
         name: str = "",
         llm: GuildLLM | None = None,
         scroll_catalog: ScrollCatalog | None = None,
+        ap: int | None = None,
+        hp: int | None = None,
     ) -> None:
-        super().__init__(adventurer_id=adventurer_id, name=name, llm=llm)
+        super().__init__(adventurer_id=adventurer_id, name=name, llm=llm, ap=ap, hp=hp)
         self._scroll_catalog = scroll_catalog
         self._scrolls: dict[str, Scroll] = {}
         self._pending_scroll_names: list[str] = []
@@ -84,13 +92,23 @@ class BaseHero(BaseAdventurer):
             )
         return self._scroll_catalog.get(name)
 
-    def pick_scroll(self, name: str) -> None:
-        """Pick up a scroll by name, loading it from the scroll catalog.
+    def pick_scroll(self, name_or_path: str | Path) -> None:
+        """Pick up a scroll by name or by direct path to a skill directory.
 
-        If no catalog is set yet (e.g. before ``GuildBuilder.build()``),
-        the name is stored as pending and resolved when the catalog is
-        injected later.
+        Passing a path to a directory containing ``SKILL.md`` loads the
+        scroll immediately — no catalog needed. Passing a name resolves it
+        from the scroll catalog; if no catalog is set yet (e.g. before
+        ``GuildBuilder.build()`` injects one), the name is stored as pending
+        and resolved when the catalog arrives. Either way the scroll only
+        needs to be registered once.
         """
+        path = Path(name_or_path)
+        if isinstance(name_or_path, Path) or (path / "SKILL.md").is_file():
+            scroll = Scroll(path)
+            self._scrolls[scroll.name] = scroll
+            self._logger.info("Picked scroll from path: %s", scroll.name)
+            return
+        name = str(name_or_path)
         if self._scroll_catalog is not None:
             scroll = self._resolve_scroll(name)
             self._scrolls[scroll.name] = scroll
@@ -197,7 +215,7 @@ class BaseHero(BaseAdventurer):
             system_prompt=self.system_prompt,
             skills=skill_paths or None,
             subagents=subagents or None,
-            middleware=list(self._armor),
+            middleware=[*self._armor, self._vitality()],
             backend=FilesystemBackend(),
             name=self.name or self.id,
         )
