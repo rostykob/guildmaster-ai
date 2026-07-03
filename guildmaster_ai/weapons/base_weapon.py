@@ -16,7 +16,7 @@ class WeaponSchema(BaseModel):
     parameters: dict[str, Any]
 
 
-class BaseWeapon(BaseTool):  # type: ignore[misc]
+class BaseWeapon(BaseTool):
     """Abstract base class for all weapons (tools).
 
     Extends LangChain ``BaseTool`` so weapons are natively compatible with
@@ -26,11 +26,11 @@ class BaseWeapon(BaseTool):  # type: ignore[misc]
     (a Pydantic model) and implement :meth:`execute`.
     """
 
-    def _run(self, **kwargs: Any) -> str:  # type: ignore[override]
+    def _run(self, **kwargs: Any) -> str:
         """Sync execution — raises because this framework is async-first."""
         raise NotImplementedError("BaseWeapon is async-only. Use ainvoke().")
 
-    async def _arun(self, **kwargs: Any) -> str:  # type: ignore[override]
+    async def _arun(self, **kwargs: Any) -> str:
         """Bridge to :meth:`execute` for LangChain async invocation."""
         kwargs.pop("run_manager", None)
         result = await self.execute(**kwargs)
@@ -45,11 +45,12 @@ class BaseWeapon(BaseTool):  # type: ignore[misc]
 
     def schema(self) -> WeaponSchema:  # type: ignore[override]
         """Return a ``WeaponSchema`` built from this weapon's properties."""
-        params = (
-            self.args_schema.model_json_schema()
-            if self.args_schema
-            else {"type": "object", "properties": {}}
-        )
+        if isinstance(self.args_schema, dict):
+            params: dict[str, Any] = self.args_schema
+        elif self.args_schema is not None:
+            params = self.args_schema.model_json_schema()
+        else:
+            params = {"type": "object", "properties": {}}
         return WeaponSchema(
             name=self.name,
             description=self.description,

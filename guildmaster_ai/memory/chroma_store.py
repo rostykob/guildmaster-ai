@@ -5,6 +5,9 @@ import logging
 from typing import Any
 
 import chromadb
+from chromadb.api import ClientAPI
+from chromadb.api.models.Collection import Collection
+from chromadb.config import Settings
 
 logger = logging.getLogger("guildmaster.memory.chroma")
 
@@ -19,22 +22,23 @@ class ChromaStore:
     ) -> None:
         self._collection_name = collection_name
         self._persist_directory = persist_directory
-        self._client: chromadb.ClientAPI | None = None
-        self._collection: chromadb.Collection | None = None
+        self._client: ClientAPI | None = None
+        self._collection: Collection | None = None
 
     async def initialize(self) -> None:
         """Create or retrieve the ChromaDB collection."""
         logger.info("Initializing ChromaDB collection %r", self._collection_name)
         if self._persist_directory:
-            settings = chromadb.Settings(
+            settings = Settings(
                 persist_directory=str(self._persist_directory),
                 is_persistent=True,
             )
-            self._client = await asyncio.to_thread(chromadb.Client, settings)
+            client = await asyncio.to_thread(chromadb.Client, settings)
         else:
-            self._client = await asyncio.to_thread(chromadb.Client)
+            client = await asyncio.to_thread(chromadb.Client)
+        self._client = client
         self._collection = await asyncio.to_thread(
-            self._client.get_or_create_collection,
+            client.get_or_create_collection,
             name=self._collection_name,
         )
 
@@ -64,7 +68,7 @@ class ChromaStore:
         self,
         query_text: str,
         n_results: int = 5,
-        where: dict | None = None,
+        where: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Query the collection and return matching documents."""
         await self._ensure()
@@ -80,10 +84,12 @@ class ChromaStore:
         raw = await asyncio.to_thread(self._collection.query, **kwargs)
 
         results: list[dict[str, Any]] = []
-        ids = raw.get("ids", [[]])[0]
-        documents = raw.get("documents", [[]])[0]
-        metadatas = raw.get("metadatas", [[]])[0]
-        distances = raw.get("distances", [[]])[0]
+        # Query result values are Optional lists-of-lists (one inner list per
+        # query text); fall back to an empty inner list when a field is absent.
+        ids = (raw.get("ids") or [[]])[0]
+        documents = (raw.get("documents") or [[]])[0]
+        metadatas = (raw.get("metadatas") or [[]])[0]
+        distances = (raw.get("distances") or [[]])[0]
 
         for i, doc_id in enumerate(ids):
             results.append(

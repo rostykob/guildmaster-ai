@@ -20,7 +20,7 @@ class FileReadWeapon(BaseWeapon):
 
     name: str = "file_read"
     description: str = "Read a file from the filesystem"
-    args_schema: type[BaseModel] = FileReadInput  # type: ignore[assignment]
+    args_schema: type[BaseModel] = FileReadInput
 
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         path_str: str = kwargs["path"]

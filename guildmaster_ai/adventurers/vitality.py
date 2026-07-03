@@ -9,18 +9,19 @@ When either reaches zero the agent run is aborted with
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
-from typing import Any, ClassVar
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain_core.messages import ToolMessage
+from langchain_core.tools import BaseTool
 
 from guildmaster_ai.core.exceptions import AdventurerDefeatedError
 
 logger = logging.getLogger("guildmaster.vitality")
 
 
-class VitalityMiddleware(AgentMiddleware):  # type: ignore[misc]
+class VitalityMiddleware(AgentMiddleware):
     """Per-quest AP/HP budget enforcement.
 
     A fresh instance is created for every agent build (one per quest
@@ -33,7 +34,8 @@ class VitalityMiddleware(AgentMiddleware):  # type: ignore[misc]
       exhausted :class:`AdventurerDefeatedError` (``stat="hp"``) is raised.
     """
 
-    tools: ClassVar[list[Any]] = []  # type: ignore[assignment]
+    # AgentMiddleware declares ``tools`` without a default; vitality registers none.
+    tools: Sequence[BaseTool] = []
 
     def __init__(self, ap: int, hp: int, adventurer: str) -> None:
         super().__init__()

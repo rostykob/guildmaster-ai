@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar, Literal
+from collections.abc import Sequence
+from typing import Any, Literal
 
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
 from guildmaster_ai.core.exceptions import ArmorBlockedError
@@ -20,7 +22,7 @@ class ArmorResult(BaseModel):
     modified_content: str | None = None
 
 
-class BaseArmor(AgentMiddleware, ABC):  # type: ignore[misc]
+class BaseArmor(AgentMiddleware, ABC):
     """Abstract base class for all armor (guardrails).
 
     Armor pieces double as LangChain ``AgentMiddleware``.  The framework
@@ -32,7 +34,8 @@ class BaseArmor(AgentMiddleware, ABC):  # type: ignore[misc]
     the middleware hooks are wired automatically.
     """
 
-    tools: ClassVar[list[Any]] = []  # type: ignore[assignment]
+    # AgentMiddleware declares ``tools`` without a default; armor registers none.
+    tools: Sequence[BaseTool] = []
 
     @property
     @abstractmethod

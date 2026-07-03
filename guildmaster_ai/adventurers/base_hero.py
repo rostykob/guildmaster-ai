@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from deepagents import CompiledSubAgent, create_deep_agent
+from deepagents import CompiledSubAgent, SubAgent, create_deep_agent
 from deepagents.backends import FilesystemBackend
 
 from guildmaster_ai.adventurers.base_adventurer import BaseAdventurer
@@ -135,7 +135,7 @@ class BaseHero(BaseAdventurer):
         its ``task`` tool.  Call :meth:`dismiss` to remove a member.
         """
         self._members[adventurer.id] = adventurer
-        self._logger.info("Recruited member: %s", adventurer.name or adventurer.id)
+        self._logger.info("Recruited member: %s", adventurer.label)
 
     def dismiss(self, adventurer_id: str) -> None:
         """Remove an adventurer from this hero's party.
@@ -144,7 +144,7 @@ class BaseHero(BaseAdventurer):
         """
         removed = self._members.pop(adventurer_id, None)
         if removed:
-            self._logger.info("Dismissed member: %s", removed.name or removed.id)
+            self._logger.info("Dismissed member: %s", removed.label)
 
     @property
     def members(self) -> dict[str, BaseAdventurer]:
@@ -154,7 +154,7 @@ class BaseHero(BaseAdventurer):
     @property
     def member_names(self) -> list[str]:
         """Return a list of recruited member names."""
-        return [m.name or m.id for m in self._members.values()]
+        return [m.label for m in self._members.values()]
 
     # ── Spawning ──────────────────────────────────────────────────────
 
@@ -199,15 +199,14 @@ class BaseHero(BaseAdventurer):
         # Convert recruited members to CompiledSubAgent instances.
         # Each member's agent graph is built here so the deep agent can
         # invoke them as subagents via the ``task`` tool.
-        subagents: list[CompiledSubAgent] = []
-        for member in self._members.values():
-            subagents.append(
-                CompiledSubAgent(
-                    name=member.name or member.id,
-                    description=member.system_prompt[:200],
-                    runnable=member._build_agent(),
-                )
+        subagents: list[SubAgent | CompiledSubAgent] = [
+            CompiledSubAgent(
+                name=member.label,
+                description=member.system_prompt[:200],
+                runnable=member._build_agent(),
             )
+            for member in self._members.values()
+        ]
 
         return create_deep_agent(
             model=self._llm,
@@ -217,7 +216,7 @@ class BaseHero(BaseAdventurer):
             subagents=subagents or None,
             middleware=[*self._armor, self._vitality()],
             backend=FilesystemBackend(),
-            name=self.name or self.id,
+            name=self.label,
         )
 
     # ── Profile ───────────────────────────────────────────────────────

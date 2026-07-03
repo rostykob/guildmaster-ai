@@ -19,6 +19,13 @@ class SQLiteStore:
         self._db_path = db_path
         self._db: aiosqlite.Connection | None = None
 
+    @property
+    def _conn(self) -> aiosqlite.Connection:
+        """Return the open connection, or raise if the store isn't initialized."""
+        if self._db is None:
+            raise RuntimeError("Store not initialized. Call initialize() first.")
+        return self._db
+
     async def initialize(self) -> None:
         """Open the database and create tables if they don't exist."""
         logger.info("Initializing SQLite store at %s", self._db_path)
@@ -110,9 +117,6 @@ class SQLiteStore:
 
     async def save_quest(self, quest: Quest) -> None:
         """Upsert a quest into the database."""
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
-
         data = json.dumps(
             {
                 "required_talents": quest.required_talents,
@@ -122,7 +126,7 @@ class SQLiteStore:
             }
         )
 
-        await self._db.execute(
+        await self._conn.execute(
             """
             INSERT INTO quests (id, title, description, rank, status, data, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -148,11 +152,11 @@ class SQLiteStore:
         # Sync the audit trail (stage transitions + events). History is
         # append-only in memory; mirror the full trail so the DB always
         # reflects the current stage and how the quest reached it.
-        await self._db.execute(
+        await self._conn.execute(
             "DELETE FROM quest_history WHERE quest_id = ?", (quest.id,)
         )
         for entry in quest.history:
-            await self._db.execute(
+            await self._conn.execute(
                 """
                 INSERT INTO quest_history (quest_id, actor, event_type, payload, timestamp)
                 VALUES (?, ?, ?, ?, ?)
@@ -165,14 +169,11 @@ class SQLiteStore:
                     entry.timestamp.isoformat(),
                 ),
             )
-        await self._db.commit()
+        await self._conn.commit()
 
     async def get_quest(self, quest_id: str) -> Quest | None:
         """Retrieve a quest by ID, or return None if not found."""
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
-
-        async with self._db.execute(
+        async with self._conn.execute(
             "SELECT id, title, description, rank, status, data, created_at, updated_at"
             " FROM quests WHERE id = ?",
             (quest_id,),
@@ -200,54 +201,9 @@ class SQLiteStore:
             updated_at=row[7],
         )
 
-    async def list_quests(self, status: QuestStatus | None = None) -> list[Quest]:
-        """List quests, optionally filtered by status."""
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
-
-        if status is not None:
-            query = "SELECT id FROM quests WHERE status = ? ORDER BY created_at DESC"
-            params: tuple[Any, ...] = (status.value,)
-        else:
-            query = "SELECT id FROM quests ORDER BY created_at DESC"
-            params = ()
-
-        async with self._db.execute(query, params) as cursor:
-            rows = await cursor.fetchall()
-
-        quests: list[Quest] = []
-        for row in rows:
-            quest = await self.get_quest(row[0])
-            if quest is not None:
-                quests.append(quest)
-        return quests
-
-    async def save_history_entry(self, quest_id: str, entry: QuestHistoryEntry) -> None:
-        """Save a single history entry for a quest."""
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
-
-        await self._db.execute(
-            """
-            INSERT INTO quest_history (quest_id, actor, event_type, payload, timestamp)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                quest_id,
-                entry.actor,
-                entry.event_type,
-                json.dumps(entry.payload),
-                entry.timestamp.isoformat(),
-            ),
-        )
-        await self._db.commit()
-
     async def get_history(self, quest_id: str) -> list[QuestHistoryEntry]:
         """Retrieve all history entries for a quest."""
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
-
-        async with self._db.execute(
+        async with self._conn.execute(
             "SELECT actor, event_type, payload, timestamp"
             " FROM quest_history WHERE quest_id = ? ORDER BY timestamp",
             (quest_id,),
@@ -268,11 +224,8 @@ class SQLiteStore:
 
     async def save_guild_state(self, key: str, value: str) -> None:
         """Save a key-value pair to the guild state table."""
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
-
         now = _utcnow().isoformat()
-        await self._db.execute(
+        await self._conn.execute(
             """
             INSERT INTO guild_state (key, value, updated_at)
             VALUES (?, ?, ?)
@@ -282,14 +235,11 @@ class SQLiteStore:
             """,
             (key, value, now),
         )
-        await self._db.commit()
+        await self._conn.commit()
 
     async def get_guild_state(self, key: str) -> str | None:
         """Retrieve a guild state value by key."""
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
-
-        async with self._db.execute(
+        async with self._conn.execute(
             "SELECT value FROM guild_state WHERE key = ?", (key,)
         ) as cursor:
             row = await cursor.fetchone()
@@ -301,11 +251,8 @@ class SQLiteStore:
         self, config_hash: str, class_name: str, talents: list[str]
     ) -> None:
         """Persist adventurer talents keyed by config hash."""
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
-
         now = _utcnow().isoformat()
-        await self._db.execute(
+        await self._conn.execute(
             """
             INSERT INTO adventurer_talents (config_hash, class_name, talents, updated_at)
             VALUES (?, ?, ?, ?)
@@ -316,30 +263,25 @@ class SQLiteStore:
             """,
             (config_hash, class_name, json.dumps(talents), now),
         )
-        await self._db.commit()
+        await self._conn.commit()
 
     async def get_adventurer_talents(self, config_hash: str) -> list[str] | None:
         """Retrieve cached talents by config hash, or None if not found."""
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
-
-        async with self._db.execute(
+        async with self._conn.execute(
             "SELECT talents FROM adventurer_talents WHERE config_hash = ?",
             (config_hash,),
         ) as cursor:
             row = await cursor.fetchone()
         if row is None:
             return None
-        return json.loads(row[0])
+        talents: list[str] = json.loads(row[0])
+        return talents
 
     # ── Quest results ────────────────────────────────────────────────────
 
     async def save_result(self, quest_id: str, result: dict[str, Any]) -> None:
         """Persist a quest result."""
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
-
-        await self._db.execute(
+        await self._conn.execute(
             """
             INSERT INTO quest_results (quest_id, success, summary, data, failure_reason)
             VALUES (?, ?, ?, ?, ?)
@@ -357,14 +299,11 @@ class SQLiteStore:
                 result.get("failure_reason"),
             ),
         )
-        await self._db.commit()
+        await self._conn.commit()
 
     async def get_result(self, quest_id: str) -> dict[str, Any] | None:
         """Retrieve a persisted quest result."""
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
-
-        async with self._db.execute(
+        async with self._conn.execute(
             "SELECT success, summary, data, failure_reason FROM quest_results WHERE quest_id = ?",
             (quest_id,),
         ) as cursor:
@@ -392,13 +331,11 @@ class SQLiteStore:
         are append-only: a subtask retry records a fresh conversation rather
         than overwriting the earlier attempt.
         """
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
         if not messages:
             return
 
         now = _utcnow().isoformat()
-        await self._db.executemany(
+        await self._conn.executemany(
             """
             INSERT INTO quest_conversations
                 (quest_id, adventurer, seq, role, content, timestamp)
@@ -416,14 +353,11 @@ class SQLiteStore:
                 for seq, msg in enumerate(messages)
             ],
         )
-        await self._db.commit()
+        await self._conn.commit()
 
     async def get_conversation(self, quest_id: str) -> list[dict[str, Any]]:
         """Retrieve the full conversation transcript for a quest, in order."""
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
-
-        async with self._db.execute(
+        async with self._conn.execute(
             "SELECT adventurer, seq, role, content, timestamp"
             " FROM quest_conversations WHERE quest_id = ?"
             " ORDER BY id, seq",
@@ -458,10 +392,7 @@ class SQLiteStore:
         and party-leader decisions across retry rounds — so a quest's reasoning
         trail survives beyond the final :class:`QuestResult`.
         """
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
-
-        await self._db.execute(
+        await self._conn.execute(
             """
             INSERT INTO quest_findings
                 (quest_id, iteration, kind, summary, data, timestamp)
@@ -476,14 +407,11 @@ class SQLiteStore:
                 _utcnow().isoformat(),
             ),
         )
-        await self._db.commit()
+        await self._conn.commit()
 
     async def get_findings(self, quest_id: str) -> list[dict[str, Any]]:
         """Retrieve all findings for a quest, ordered by iteration."""
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
-
-        async with self._db.execute(
+        async with self._conn.execute(
             "SELECT iteration, kind, summary, data, timestamp"
             " FROM quest_findings WHERE quest_id = ?"
             " ORDER BY iteration, id",
@@ -513,10 +441,7 @@ class SQLiteStore:
         lessons_learned: list[str],
     ) -> None:
         """Persist a librarian observation (upsert by observation id)."""
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
-
-        await self._db.execute(
+        await self._conn.execute(
             """
             INSERT INTO observations
                 (id, quest_id, summary, tags, lessons_learned, timestamp)
@@ -537,7 +462,7 @@ class SQLiteStore:
                 _utcnow().isoformat(),
             ),
         )
-        await self._db.commit()
+        await self._conn.commit()
 
     async def get_observations(
         self,
@@ -545,9 +470,6 @@ class SQLiteStore:
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Retrieve stored observations (newest first), optionally by quest."""
-        if self._db is None:
-            raise RuntimeError("Store not initialized. Call initialize() first.")
-
         if quest_id is not None:
             query = (
                 "SELECT id, quest_id, summary, tags, lessons_learned, timestamp"
@@ -562,7 +484,7 @@ class SQLiteStore:
             )
             params = (limit,)
 
-        async with self._db.execute(query, params) as cursor:
+        async with self._conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
 
         return [

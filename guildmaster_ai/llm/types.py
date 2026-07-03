@@ -59,7 +59,7 @@ class GuildResponse(BaseModel):
     def from_ai_message(cls, msg: AIMessage) -> GuildResponse:
         """Build a ``GuildResponse`` from a LangChain ``AIMessage``."""
         content = msg.content if isinstance(msg.content, str) else str(msg.content)
-        return cls(content=content, tool_calls=msg.tool_calls or [])
+        return cls(content=content, tool_calls=[dict(tc) for tc in msg.tool_calls])
 
 
 # ---------------------------------------------------------------------------
@@ -78,5 +78,5 @@ async def guild_complete(
     Components that need tool loops should use :class:`BaseAdventurer` instead.
     """
     messages = [SystemMessage(content=system), HumanMessage(content=user)]
-    response: AIMessage = await llm.ainvoke(messages)  # type: ignore[arg-type]
+    response: AIMessage = await llm.ainvoke(messages)
     return response.content if isinstance(response.content, str) else str(response.content)

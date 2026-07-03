@@ -116,7 +116,6 @@ class Guild:
         # (bounded by settings.max_concurrent_quests). One completion event
         # per quest lets callers await results via wait_for_quest().
         self._submit_stream: MemoryObjectSendStream[str] | None = None
-        self._intake_stream: MemoryObjectReceiveStream[str] | None = None
         self._worker_task: asyncio.Task[None] | None = None
         self._completion_events: dict[str, asyncio.Event] = {}
         self._prepare_lock = asyncio.Lock()
@@ -153,10 +152,7 @@ class Guild:
         Pass a custom :class:`BaseGuard` instance, or omit to use the
         built-in LLM-as-judge :class:`Guard`.
         """
-        if guard is not None:
-            self._guard = guard
-        else:
-            self._guard = Guard(llm=self._llm)
+        self._guard = guard if guard is not None else Guard(llm=self._llm)
         logger.info("Guard enabled: %s", self._guard.name)
 
     # ── Info ───────────────────────────────────────────────────────────
@@ -245,7 +241,6 @@ class Guild:
             return
         send, receive = anyio.create_memory_object_stream[str](max_buffer_size=math.inf)
         self._submit_stream = send
-        self._intake_stream = receive
         self._worker_task = asyncio.create_task(self._quest_worker(receive))
 
     async def _quest_worker(self, intake: MemoryObjectReceiveStream[str]) -> None:
@@ -440,9 +435,8 @@ class Guild:
         self._board.assign(quest.id, party.id, actor="guildmaster")
 
         leader = leader_adv.spawn()
-        leader_label = leader.name or leader.id
-        logger.info("Quest leader: %s", leader_label)
-        quest.transition(QuestStatus.IN_PROGRESS, leader_label)
+        logger.info("Quest leader: %s", leader.label)
+        quest.transition(QuestStatus.IN_PROGRESS, leader.label)
         result = await self._run_and_capture(leader, quest)
 
         return await self._verify_and_complete(quest, result)
@@ -477,16 +471,12 @@ class Guild:
         for member_id in leader.members:
             party.add_member(member_id)
 
-        quest.assigned_party_id = party.id
-        quest.transition(QuestStatus.ASSIGNED, "guildmaster", {"party_id": party.id})
-        quest.transition(
-            QuestStatus.IN_PROGRESS,
-            leader.name or leader.id,
-        )
+        self._board.assign(quest.id, party.id, actor="guildmaster")
+        quest.transition(QuestStatus.IN_PROGRESS, leader.label)
 
         logger.info(
             "Hero %s leading party with %d member(s)",
-            leader.name or leader.id,
+            leader.label,
             len(leader.members),
         )
 
@@ -511,8 +501,7 @@ class Guild:
         for child in child_quests:
             self._quests[child.id] = child
 
-        quest.transition(QuestStatus.ASSIGNED, "guildmaster", {"party_id": party.id})
-        quest.assigned_party_id = party.id
+        self._board.assign(quest.id, party.id, actor="guildmaster")
         quest.transition(QuestStatus.IN_PROGRESS, "guildmaster")
 
         subtask_results = await self._run_subtasks_with_deps(
@@ -667,7 +656,7 @@ class Guild:
 
             async def _exec(idx: int) -> tuple[int, QuestResult]:
                 adv_id = party.subtask_assignments.get(child_quests[idx].id, "")
-                adventurer = self._guildmaster._roster.get(adv_id)
+                adventurer = self._guildmaster.get_adventurer(adv_id)
                 return idx, await self._execute_subtask(child_quests[idx], adventurer)
 
             wave_results = await asyncio.gather(*[_exec(i) for i in wave])
@@ -720,7 +709,7 @@ class Guild:
             adv_id: str,
             tasks: list[Quest],
         ) -> list[QuestResult]:
-            adventurer = self._guildmaster._roster.get(adv_id)
+            adventurer = self._guildmaster.get_adventurer(adv_id)
             results: list[QuestResult] = []
             for task in tasks:
                 result = await self._execute_subtask(task, adventurer)
@@ -764,16 +753,14 @@ class Guild:
             "Executing subtask %s (%r) with %s",
             subtask.id[:8],
             subtask.title,
-            runner.name or runner.id,
+            runner.label,
         )
         # Subtask is already ASSIGNED from form_party_for_plan
-        subtask.transition(QuestStatus.IN_PROGRESS, runner.name or runner.id)
+        subtask.transition(QuestStatus.IN_PROGRESS, runner.label)
         result = await self._run_and_capture(runner, subtask)
 
-        if result.success:
-            subtask.transition(QuestStatus.COMPLETED, runner.name or runner.id)
-        else:
-            subtask.transition(QuestStatus.FAILED, runner.name or runner.id)
+        outcome = QuestStatus.COMPLETED if result.success else QuestStatus.FAILED
+        subtask.transition(outcome, runner.label)
 
         self._results[subtask.id] = result
         return result
@@ -895,7 +882,7 @@ class Guild:
         and applied to every instance sharing that configuration.
         """
         by_config: dict[str, list[BaseAdventurer]] = {}
-        for adv in self._guildmaster._roster.values():
+        for adv in self._guildmaster.adventurers:
             by_config.setdefault(adv.config_hash, []).append(adv)
 
         to_assess: list[tuple[str, list[BaseAdventurer]]] = []
@@ -903,8 +890,7 @@ class Guild:
             cached = await self._store.get_adventurer_talents(config_hash)
             if cached is not None:
                 for adv in advs:
-                    adv._talents.clear()
-                    adv.grant_talents(cached)
+                    adv.set_talents(cached)
             else:
                 to_assess.append((config_hash, advs))
 
@@ -920,15 +906,14 @@ class Guild:
         )
         for (config_hash, advs), talents in zip(to_assess, assessed, strict=True):
             for adv in advs:
-                adv._talents.clear()
-                adv.grant_talents(talents)
+                adv.set_talents(talents)
             await self._store.save_adventurer_talents(
                 config_hash, type(advs[0]).__name__, talents
             )
         logger.info(
             "Assessed %d unique adventurer config(s) via LLM (%d adventurers total)",
             len(to_assess),
-            len(self._guildmaster._roster),
+            len(self._guildmaster.adventurers),
         )
 
     async def _run_and_capture(
@@ -943,11 +928,7 @@ class Guild:
         """
         result = await runner.execute(quest)
         if self._store_initialized and result.transcript:
-            await self._store.save_conversation(
-                quest.id,
-                runner.name or runner.id,
-                result.transcript,
-            )
+            await self._store.save_conversation(quest.id, runner.label, result.transcript)
         return result
 
     async def _persist_subtask_findings(

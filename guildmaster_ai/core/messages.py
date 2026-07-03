@@ -29,19 +29,6 @@ class QuestDraft(BaseModel):
     acceptance_criteria: list[str] = Field(default_factory=list)
 
 
-class QuestClarificationRequest(BaseMessage):
-    """Sent when a quest draft needs more information."""
-
-    quest_draft: QuestDraft
-    questions: list[str]
-
-
-class QuestClarificationResponse(BaseMessage):
-    """Answers to clarification questions."""
-
-    answers: dict[str, str]
-
-
 class AdventurerProfile(BaseModel):
     """Public profile of an adventurer."""
 

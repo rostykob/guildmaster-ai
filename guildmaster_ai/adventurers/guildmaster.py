@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 
@@ -24,6 +23,13 @@ from guildmaster_ai.llm.types import GuildLLM, guild_complete
 logger = logging.getLogger("guildmaster.guildmaster")
 
 
+def _chronicle_block(chronicle: str) -> str:
+    """Format the librarian chronicle for prompt injection (empty when absent)."""
+    if not chronicle:
+        return ""
+    return f"\n\nGuild chronicle (lessons from past quests):\n{chronicle}"
+
+
 class Guildmaster:
     """Central coordinator that manages adventurers, quests, and party formation."""
 
@@ -39,25 +45,22 @@ class Guildmaster:
 
         Grants initial talents derived from equipped weapons and armor.
         Full LLM-based talent assessment happens later via
-        :meth:`refine_all_talents`.
+        :meth:`assess_talents_for` (driven by ``Guild.prepare()``).
         """
         talents = self._derive_equipment_talents(adventurer)
         adventurer.grant_talents(talents)
         self._roster[adventurer.id] = adventurer
-        logger.info(
-            "Registered adventurer %r with talents %s",
-            adventurer.name or adventurer.id,
-            talents,
-        )
-
-    def unregister_adventurer(self, adventurer_id: str) -> None:
-        """Remove an adventurer from the guild roster."""
-        self._roster.pop(adventurer_id, None)
+        logger.info("Registered adventurer %r with talents %s", adventurer.label, talents)
 
     @property
     def roster(self) -> list[AdventurerProfile]:
         """Return profiles of all registered adventurers."""
         return [adv.profile() for adv in self._roster.values()]
+
+    @property
+    def adventurers(self) -> list[BaseAdventurer]:
+        """Return all registered adventurers."""
+        return list(self._roster.values())
 
     # ── Talent assessment ──────────────────────────────────────────────
 
@@ -66,25 +69,17 @@ class Guildmaster:
         """Derive initial talents from an adventurer's weapons and armor.
 
         This is a lightweight, sync-safe method used at registration time.
-        Full LLM-based assessment is deferred to :meth:`refine_all_talents`.
+        Full LLM-based assessment is deferred to :meth:`assess_talents_for`.
         """
+        names = adventurer.weapon_names + [a.name for a in adventurer.armor]
         talents: list[str] = []
-
-        for weapon_name in adventurer.weapon_names:
-            weapon_talent = weapon_name.lower().replace(" ", "_")
-            if weapon_talent not in talents:
-                talents.append(weapon_talent)
-
-        for armor_piece in adventurer.armor:
-            armor_talent = armor_piece.name.lower().replace(" ", "_")
-            if armor_talent not in talents:
-                talents.append(armor_talent)
+        for name in names:
+            talent = name.lower().replace(" ", "_")
+            if talent not in talents:
+                talents.append(talent)
 
         # Every adventurer gets at least "general"
-        if not talents:
-            talents.append("general")
-
-        return talents
+        return talents or ["general"]
 
     async def _llm_assess_talents(self, adventurer: BaseAdventurer) -> list[str]:
         """Use the LLM to assess an adventurer's talents from their full profile.
@@ -137,37 +132,6 @@ class Guildmaster:
             new_talents.append("general")
         return new_talents
 
-    async def refine_all_talents(self) -> None:
-        """Assess talents for all registered adventurers using the LLM.
-
-        Adventurers that share a configuration (same class, weapons, armor, and
-        system prompt — i.e. identical ``config_hash``) are assessed **once** and
-        the result is applied to every instance. Unique configurations are
-        assessed concurrently. This replaces the initial equipment-derived
-        talents with richer LLM-derived ones.
-        """
-        if self._llm is None:
-            return
-
-        # Group identical adventurers so we make one LLM call per unique config.
-        by_config: dict[str, list[BaseAdventurer]] = {}
-        for adv in self._roster.values():
-            by_config.setdefault(adv.config_hash, []).append(adv)
-
-        logger.info(
-            "Assessing adventurer talents via LLM (%d adventurers, %d unique configs)",
-            len(self._roster),
-            len(by_config),
-        )
-
-        reps = [advs[0] for advs in by_config.values()]
-        assessed = await asyncio.gather(*(self.assess_talents_for(rep) for rep in reps))
-
-        for advs, new_talents in zip(by_config.values(), assessed, strict=True):
-            for adv in advs:
-                adv._talents.clear()
-                adv.grant_talents(new_talents)
-
     async def triage_quest(self, draft: QuestDraft, chronicle: str = "") -> QuestTriage:
         """Rank a quest and pick candidate adventurers in ONE LLM call.
 
@@ -191,25 +155,21 @@ class Guildmaster:
                 sender="guildmaster",
                 infeasible_reason="The guild has no registered adventurers",
             )
+        roster_ids = [adv.id for adv in roster]
         if self._llm is None:
-            return QuestTriage(
-                sender="guildmaster",
-                adventurer_ids=[adv.id for adv in roster],
-            )
+            return QuestTriage(sender="guildmaster", adventurer_ids=roster_ids)
 
         profiles = [
             {
                 "id": adv.id,
-                "name": adv.name or adv.id,
+                "name": adv.label,
                 "hero": isinstance(adv, BaseHero),
                 "talents": adv.talents,
                 "weapons": adv.weapon_names,
             }
             for adv in roster
         ]
-        chronicle_text = (
-            f"\n\nGuild chronicle (lessons from past quests):\n{chronicle}" if chronicle else ""
-        )
+        chronicle_text = _chronicle_block(chronicle)
         hints = (
             f"\nUser-requested talents: {draft.required_talents}" if draft.required_talents else ""
         )
@@ -247,16 +207,13 @@ class Guildmaster:
         data = safe_parse_llm_json(raw, context="triage_quest")
         if not isinstance(data, dict):
             logger.warning("Could not parse triage response — using full roster, rank E")
-            return QuestTriage(
-                sender="guildmaster",
-                adventurer_ids=[adv.id for adv in roster],
-            )
+            return QuestTriage(sender="guildmaster", adventurer_ids=roster_ids)
 
         reason = data.get("infeasible_reason") or None
         candidate_ids = self._resolve_adventurer_refs(data.get("adventurers", []))
         if not candidate_ids and reason is None:
             # LLM answered but named nobody we know — don't brick the quest.
-            candidate_ids = [adv.id for adv in roster]
+            candidate_ids = roster_ids
         return QuestTriage(
             sender="guildmaster",
             rank=self._parse_rank(data.get("rank")),
@@ -269,7 +226,7 @@ class Guildmaster:
         if not isinstance(refs, list):
             return []
         by_name = {
-            (adv.name or adv.id).lower(): adv.id for adv in self._roster.values()
+            (adv.label).lower(): adv.id for adv in self._roster.values()
         }
         resolved: list[str] = []
         for ref in refs:
@@ -386,12 +343,10 @@ class Guildmaster:
         logger.info("Analyzing quest %s for decomposition", quest.id[:8])
 
         profiles = [
-            {"id": adv.id, "name": adv.name or adv.id, "talents": adv.talents}
+            {"id": adv.id, "name": adv.label, "talents": adv.talents}
             for adv in self._roster.values()
         ]
-        chronicle_text = (
-            f"\n\nGuild chronicle (lessons from past quests):\n{chronicle}" if chronicle else ""
-        )
+        chronicle_text = _chronicle_block(chronicle)
 
         raw = await guild_complete(
             self._llm,
@@ -509,16 +464,12 @@ class Guildmaster:
                 logger.debug(
                     "No planned assignee for subtask %r — matched %s",
                     child.title,
-                    adventurer.name or adventurer.id if adventurer else None,
+                    adventurer.label if adventurer else None,
                 )
 
             if adventurer is not None:
                 party.assign_subtask(child.id, adventurer.id)
-                logger.debug(
-                    "Subtask %r -> adventurer %s",
-                    child.title,
-                    adventurer.name or adventurer.id,
-                )
+                logger.debug("Subtask %r -> adventurer %s", child.title, adventurer.label)
 
                 # Track best leader by talent overlap
                 overlap = len(set(adventurer.talents) & set(quest.required_talents))
@@ -562,55 +513,42 @@ class Guildmaster:
             quest.id[:8],
             len(subtask_results),
         )
-        all_success = all(r.success for r in subtask_results)
-        failed_indices = [i for i, r in enumerate(subtask_results) if not r.success]
-
         if self._llm is not None:
-            return await self._llm_evaluate_completion(
-                quest,
-                subtask_results,
-                all_success,
-                failed_indices,
-            )
+            return await self._llm_evaluate_completion(quest, subtask_results)
+        return self._rule_based_completion(quest, subtask_results)
 
-        # Rule-based fallback
-        if all_success:
-            combined = "\n\n".join(r.summary for r in subtask_results)
+    @staticmethod
+    def _rule_based_completion(
+        quest: Quest,
+        subtask_results: list[QuestResult],
+    ) -> PartyLeaderDecision:
+        """Evaluate completion without an LLM: all-success → done, else retry."""
+        failed_indices = [i for i, r in enumerate(subtask_results) if not r.success]
+        if not failed_indices:
             return PartyLeaderDecision(
                 sender="guildmaster",
                 quest_id=quest.id,
                 decision="done",
                 reason="All subtasks completed successfully.",
-                combined_summary=combined,
+                combined_summary="\n\n".join(r.summary for r in subtask_results),
             )
-
-        if failed_indices:
-            return PartyLeaderDecision(
-                sender="guildmaster",
-                quest_id=quest.id,
-                decision="retry",
-                reason=f"Subtasks at indices {failed_indices} failed.",
-                retry_subtask_indices=failed_indices,
-            )
-
         return PartyLeaderDecision(
             sender="guildmaster",
             quest_id=quest.id,
-            decision="failed",
-            reason="Quest could not be completed.",
+            decision="retry",
+            reason=f"Subtasks at indices {failed_indices} failed.",
+            retry_subtask_indices=failed_indices,
         )
 
     async def _llm_evaluate_completion(
         self,
         quest: Quest,
         subtask_results: list[QuestResult],
-        all_success: bool,
-        failed_indices: list[int],
     ) -> PartyLeaderDecision:
         """Use the LLM to evaluate composite quest completion.
 
         Tries LLM-based evaluation first; on parse failure, falls back to
-        rule-based logic (all-success → done, any-failed → retry/failed).
+        rule-based logic (all-success → done, any-failed → retry).
         """
         assert self._llm is not None
 
@@ -637,35 +575,21 @@ class Guildmaster:
         )
 
         data = safe_parse_llm_json(raw, context="evaluate_completion")
-        if data is not None:
-            decision = data.get("decision", "done")
-            if decision not in ("done", "failed", "retry"):
-                decision = "done" if all_success else "failed"
-            return PartyLeaderDecision(
-                sender="guildmaster",
-                quest_id=quest.id,
-                decision=decision,
-                reason=data.get("reason", ""),
-                retry_subtask_indices=data.get("retry_subtask_indices", []),
-                combined_summary=data.get("combined_summary", ""),
-            )
+        if data is None:
+            # Fall back to rule-based when LLM response couldn't be parsed
+            return self._rule_based_completion(quest, subtask_results)
 
-        # Fall back to rule-based when LLM response couldn't be parsed
-        if all_success:
-            combined = "\n\n".join(r.summary for r in subtask_results)
-            return PartyLeaderDecision(
-                sender="guildmaster",
-                quest_id=quest.id,
-                decision="done",
-                reason="All subtasks completed successfully.",
-                combined_summary=combined,
-            )
+        all_success = all(r.success for r in subtask_results)
+        decision = data.get("decision", "done")
+        if decision not in ("done", "failed", "retry"):
+            decision = "done" if all_success else "failed"
         return PartyLeaderDecision(
             sender="guildmaster",
             quest_id=quest.id,
-            decision="retry" if failed_indices else "failed",
-            reason=f"Subtasks at indices {failed_indices} failed.",
-            retry_subtask_indices=failed_indices,
+            decision=decision,
+            reason=data.get("reason", ""),
+            retry_subtask_indices=data.get("retry_subtask_indices", []),
+            combined_summary=data.get("combined_summary", ""),
         )
 
     # ── Helpers ────────────────────────────────────────────────────────

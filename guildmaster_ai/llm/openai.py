@@ -5,7 +5,7 @@ from typing import Any
 from langchain_openai import ChatOpenAI as _ChatOpenAI
 
 
-class ChatOpenAIProvider(_ChatOpenAI):  # type: ignore[misc]
+class ChatOpenAIProvider(_ChatOpenAI):
     """LangChain ChatModel backed by the OpenAI API.
 
     Thin wrapper around ``langchain_openai.ChatOpenAI`` that provides

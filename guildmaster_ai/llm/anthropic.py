@@ -10,7 +10,7 @@ except ImportError:  # pragma: no cover
     _SDK_AVAILABLE = False
 
 
-class ChatAnthropic(_ChatAnthropic):  # type: ignore[misc]
+class ChatAnthropic(_ChatAnthropic):
     """LangChain ChatModel backed by the Anthropic API.
 
     Thin wrapper around ``langchain_anthropic.ChatAnthropic`` that checks
@@ -36,6 +36,6 @@ class ChatAnthropic(_ChatAnthropic):  # type: ignore[misc]
             )
         super().__init__(
             api_key=api_key,  # type: ignore[arg-type]
-            model=model,  # type: ignore[arg-type]
+            model_name=model,
             **kwargs,
         )

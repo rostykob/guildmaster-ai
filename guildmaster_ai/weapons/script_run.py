@@ -29,7 +29,7 @@ class ScriptRunWeapon(BaseWeapon):
         "Execute a script file and return its output. "
         "Provide the path to the script and optional arguments."
     )
-    args_schema: type[BaseModel] = ScriptRunInput  # type: ignore[assignment]
+    args_schema: type[BaseModel] = ScriptRunInput
 
     timeout_seconds: int = 30
     """Maximum seconds to wait for the script to complete."""

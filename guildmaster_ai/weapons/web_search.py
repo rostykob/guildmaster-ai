@@ -19,7 +19,7 @@ class WebSearchWeapon(BaseWeapon):
 
     name: str = "web_search"
     description: str = "Search the web for information"
-    args_schema: type[BaseModel] = WebSearchInput  # type: ignore[assignment]
+    args_schema: type[BaseModel] = WebSearchInput
 
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         query: str = kwargs["query"]

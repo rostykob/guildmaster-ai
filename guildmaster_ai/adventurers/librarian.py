@@ -148,18 +148,6 @@ class Librarian:
         logger.debug("Analyzing quest via rule-based heuristics")
         return self._rule_based_analyze(quest, result)
 
-    async def analyze_batch(
-        self,
-        quests: list[tuple[Quest, QuestResult]],
-    ) -> list[QuestObservation]:
-        """Analyze multiple quests and return observations for each."""
-        observations: list[QuestObservation] = []
-        for quest, result in quests:
-            obs = await self.analyze_quest(quest, result)
-            observations.append(obs)
-            self._observations.append(obs)
-        return observations
-
     def query_observations(
         self,
         tags: list[str] | None = None,
@@ -369,12 +357,13 @@ class Librarian:
         """Parse LLM response into a QuestObservation, falling back to rules."""
         data = safe_parse_llm_json(response_content, context="observation_response")
         if data is not None:
+            # lessons_learned is normalised by QuestObservation's field validator.
             return QuestObservation(
                 sender="librarian",
                 quest_id=quest.id,
                 summary=str(data.get("summary", "")),
                 tags=self._coerce_tags(data.get("tags", [])),
-                lessons_learned=self._coerce_str_list(data.get("lessons_learned", [])),
+                lessons_learned=data.get("lessons_learned", []),
             )
         return self._rule_based_analyze(quest, result)
 
@@ -404,13 +393,6 @@ class Librarian:
             elif item is not None:
                 tags.append(str(item))
         return tags
-
-    @staticmethod
-    def _coerce_str_list(raw: Any) -> list[str]:
-        """Coerce an arbitrary LLM value into a list of strings."""
-        if not isinstance(raw, list):
-            raw = [raw]
-        return [str(item) for item in raw if item is not None]
 
     async def _store_observation(self, obs: QuestObservation) -> None:
         """Persist an observation to the vector store."""

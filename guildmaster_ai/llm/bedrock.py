@@ -10,7 +10,7 @@ except ImportError:  # pragma: no cover
     _SDK_AVAILABLE = False
 
 
-class ChatBedrock(_ChatBedrockConverse):  # type: ignore[misc]
+class ChatBedrock(_ChatBedrockConverse):
     """LangChain ChatModel backed by AWS Bedrock (Converse API).
 
     Thin wrapper around ``langchain_aws.ChatBedrockConverse`` that checks
@@ -36,6 +36,6 @@ class ChatBedrock(_ChatBedrockConverse):  # type: ignore[misc]
             )
         super().__init__(
             region_name=region_name,
-            model_id=model_id,
+            model=model_id,
             **kwargs,
         )

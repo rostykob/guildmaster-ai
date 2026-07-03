@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import sys
+from typing import Any
 
 
 def _try_float(value: str) -> float | None:
@@ -14,13 +15,13 @@ def _try_float(value: str) -> float | None:
         return None
 
 
-def profile(path: str) -> dict:
+def profile(path: str) -> dict[str, Any]:
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
             return {"error": "No header row found"}
 
-        columns: dict[str, dict] = {}
+        columns: dict[str, dict[str, Any]] = {}
         for col in reader.fieldnames:
             columns[col] = {
                 "values": [],
@@ -39,7 +40,7 @@ def profile(path: str) -> dict:
                     columns[col]["values"].append(val)
                     columns[col]["unique"].add(val)
 
-    report: dict = {
+    report: dict[str, Any] = {
         "file": path,
         "row_count": row_count,
         "column_count": len(columns),
@@ -47,7 +48,7 @@ def profile(path: str) -> dict:
     }
 
     for col, info in columns.items():
-        col_report: dict = {
+        col_report: dict[str, Any] = {
             "missing": info["missing"],
             "unique": len(info["unique"]),
         }

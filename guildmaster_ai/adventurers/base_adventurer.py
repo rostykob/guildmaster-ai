@@ -98,6 +98,11 @@ class BaseAdventurer:
     def llm(self, value: GuildLLM | None) -> None:
         self._llm = value
 
+    @property
+    def label(self) -> str:
+        """Human-readable identifier: the name when set, otherwise the id."""
+        return self.name or self.id
+
     # ── Talents ───────────────────────────────────────────────────────
 
     @property
@@ -114,6 +119,11 @@ class BaseAdventurer:
                 added.append(t)
         if added:
             self._logger.info("Granted talents: %s", added)
+
+    def set_talents(self, talents: list[str]) -> None:
+        """Replace all talents with *talents* (used after LLM assessment)."""
+        self._talents.clear()
+        self.grant_talents(talents)
 
     @property
     def config_hash(self) -> str:
@@ -164,19 +174,19 @@ class BaseAdventurer:
             tools=tools or None,
             system_prompt=self.system_prompt,
             middleware=[*self._armor, self._vitality()],
-            name=self.name or self.id,
+            name=self.label,
         )
 
     def _vitality(self) -> VitalityMiddleware:
         """Build a fresh AP/HP budget middleware for one quest execution."""
-        return VitalityMiddleware(ap=self.ap, hp=self.hp, adventurer=self.name or self.id)
+        return VitalityMiddleware(ap=self.ap, hp=self.hp, adventurer=self.label)
 
-    def _extract_final_text(self, messages: list[Any]) -> str:
+    @staticmethod
+    def _extract_final_text(messages: list[Any]) -> str:
         """Extract the final AI text content from agent output messages."""
         for msg in reversed(messages):
             if isinstance(msg, AIMessage) and msg.content:
-                content = msg.content if isinstance(msg.content, str) else str(msg.content)
-                return content
+                return msg.content if isinstance(msg.content, str) else str(msg.content)
         return ""
 
     @staticmethod
@@ -217,7 +227,7 @@ class BaseAdventurer:
                 exc.message,
             )
             return QuestResult(
-                sender=self.name or self.id,
+                sender=self.label,
                 quest_id=quest.id,
                 success=False,
                 summary=f"Blocked by armor {exc.armor_name}: {exc.message}",
@@ -226,7 +236,7 @@ class BaseAdventurer:
         except AdventurerDefeatedError as exc:
             self._logger.warning("Quest %s failed — %s", quest.id[:8], exc)
             return QuestResult(
-                sender=self.name or self.id,
+                sender=self.label,
                 quest_id=quest.id,
                 success=False,
                 summary=str(exc),
@@ -237,7 +247,7 @@ class BaseAdventurer:
 
         self._logger.info("Quest %s completed", quest.id[:8])
         return QuestResult(
-            sender=self.name or self.id,
+            sender=self.label,
             quest_id=quest.id,
             success=True,
             summary=summary,

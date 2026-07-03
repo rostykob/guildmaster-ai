@@ -76,11 +76,9 @@ class Receptionist:
         *max_rounds* clarification rounds are performed before returning.
         """
         logger.info("Intake started for request: %s", user_request[:100])
-        draft = self._build_initial_draft(user_request)
-
         if self._llm is None:
             logger.debug("No LLM configured — returning raw draft")
-            return draft
+            return self._build_initial_draft(user_request)
 
         # LLM-assisted refinement
         logger.info("Refining quest draft via LLM")

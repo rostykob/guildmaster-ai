@@ -5,7 +5,7 @@ from typing import Any
 from langchain_openai import AzureChatOpenAI as _AzureChatOpenAI
 
 
-class ChatAzureOpenAI(_AzureChatOpenAI):  # type: ignore[misc]
+class ChatAzureOpenAI(_AzureChatOpenAI):
     """LangChain ChatModel backed by Azure OpenAI.
 
     Thin wrapper around ``langchain_openai.AzureChatOpenAI`` that provides

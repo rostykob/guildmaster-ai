@@ -101,16 +101,6 @@ class TestLibrarian:
         obs = lib.query_observations(quest_id=quest.id)
         assert len(obs) == 1
 
-    @pytest.mark.asyncio
-    async def test_analyze_batch(self) -> None:
-        lib = Librarian()
-        pairs = [
-            (_make_quest(title=f"Q{i}"), _make_result(_make_quest(title=f"Q{i}"))) for i in range(3)
-        ]
-        observations = await lib.analyze_batch(pairs)
-        assert len(observations) == 3
-
-
 class TestObservationCoercion:
     """The parser must tolerate real-LLM tag shapes (dicts, non-strings)."""
 

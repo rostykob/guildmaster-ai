@@ -85,4 +85,5 @@ packages = ["guildmaster_ai"]
 dev = [
     "ipykernel>=7.2.0",
     "jupyter>=1.1.1",
+    "types-pyyaml>=6.0.12.20260518",
 ]

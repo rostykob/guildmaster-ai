@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
-class ChatOpenRouter(ChatOpenAI):  # type: ignore[misc]
+class ChatOpenRouter(ChatOpenAI):
     """LangChain ChatModel backed by the OpenRouter API.
 
     Thin wrapper around ``ChatOpenAI`` that defaults to the OpenRouter

@@ -271,46 +271,6 @@ class TestGuildmaster:
         # Should fall back to keyword-based — GeneralAdventurer has "general" and "versatile"
         assert len(talents) > 0
 
-    @pytest.mark.asyncio
-    async def test_refine_all_talents(self) -> None:
-        """refine_all_talents re-assesses adventurer talents via LLM."""
-        mock_llm = MockChatModel(response_content='["coding", "general"]')
-        gm = Guildmaster(llm=mock_llm)
-        adv = GeneralAdventurer(llm=mock_llm)
-        gm.register_adventurer(adv)
-
-        await gm.refine_all_talents()
-        new_talents = adv.talents
-
-        assert "coding" in new_talents
-        assert "general" in new_talents
-
-    @pytest.mark.asyncio
-    async def test_refine_all_talents_no_llm_noop(self) -> None:
-        """refine_all_talents is a no-op when no LLM is configured."""
-        gm = Guildmaster(llm=None)
-        adv = GeneralAdventurer()
-        adv.grant_talents(["general"])
-        gm._roster[adv.id] = adv
-
-        await gm.refine_all_talents()
-        assert adv.talents == ["general"]  # unchanged
-
-    @pytest.mark.asyncio
-    async def test_refine_all_talents_dedupes_identical_configs(self) -> None:
-        """Identical adventurers are assessed once (one LLM call), applied to all."""
-        mock_llm = MockChatModel(response_content='["coding", "general"]')
-        gm = Guildmaster(llm=mock_llm)
-        for _ in range(3):
-            gm.register_adventurer(GeneralAdventurer(llm=mock_llm))
-
-        await gm.refine_all_talents()
-
-        # Three identical configs → a single assessment call.
-        assert mock_llm.call_count == 1
-        for adv in gm._roster.values():
-            assert "coding" in adv.talents
-
     # ── Quest triage ──────────────────────────────────────────────────
 
     @pytest.mark.asyncio

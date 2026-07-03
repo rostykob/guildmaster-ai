@@ -10,7 +10,7 @@ except ImportError:  # pragma: no cover
     _SDK_AVAILABLE = False
 
 
-class ChatGoogle(_ChatGoogleGenAI):  # type: ignore[misc]
+class ChatGoogle(_ChatGoogleGenAI):
     """LangChain ChatModel backed by Google Generative AI (Gemini).
 
     Thin wrapper around ``langchain_google_genai.ChatGoogleGenerativeAI``
@@ -35,7 +35,7 @@ class ChatGoogle(_ChatGoogleGenAI):  # type: ignore[misc]
                 "Install it with: pip install 'guildmaster-ai[google]'"
             )
         super().__init__(
-            google_api_key=api_key,  # type: ignore[arg-type]
+            google_api_key=api_key,
             model=model,
             **kwargs,
         )
