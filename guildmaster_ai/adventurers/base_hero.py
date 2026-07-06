@@ -50,8 +50,16 @@ class BaseHero(BaseAdventurer):
         scroll_catalog: ScrollCatalog | None = None,
         ap: int | None = None,
         hp: int | None = None,
+        description: str | None = None,
     ) -> None:
-        super().__init__(adventurer_id=adventurer_id, name=name, llm=llm, ap=ap, hp=hp)
+        super().__init__(
+            adventurer_id=adventurer_id,
+            name=name,
+            llm=llm,
+            ap=ap,
+            hp=hp,
+            description=description,
+        )
         self._scroll_catalog = scroll_catalog
         self._scrolls: dict[str, Scroll] = {}
         self._pending_scroll_names: list[str] = []
@@ -202,7 +210,7 @@ class BaseHero(BaseAdventurer):
         subagents: list[SubAgent | CompiledSubAgent] = [
             CompiledSubAgent(
                 name=member.label,
-                description=member.system_prompt[:200],
+                description=(member.description or member.system_prompt)[:200],
                 runnable=member._build_agent(),
             )
             for member in self._members.values()
@@ -226,6 +234,7 @@ class BaseHero(BaseAdventurer):
         return AdventurerProfile(
             id=self.id,
             name=self.name,
+            description=self.description,
             talents=self.talents,
             weapons=list(self._weapons.keys()),
             armor=[a.name for a in self._armor],

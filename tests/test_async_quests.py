@@ -109,3 +109,68 @@ class TestConcurrentQuests:
         assert all(r.summary for r in results)
         assert len(guild.quests) == 3
         await guild.close()
+
+
+class TestQuestCompletionHandlers:
+    async def test_async_handler_receives_quest_and_result(self) -> None:
+        guild = _guild(MockChatModel(response_content="Done."))
+        seen: list[tuple[str, bool]] = []
+
+        async def handler(quest, result) -> None:  # type: ignore[no-untyped-def]
+            seen.append((quest.id, result.success))
+
+        guild.on_quest_complete(handler)
+        result = await guild.run_quest("Do something")
+        assert seen == [(result.quest_id, result.success)]
+        await guild.close()
+
+    async def test_sync_handler_and_unsubscribe(self) -> None:
+        guild = _guild(MockChatModel(response_content="Done."))
+        seen: list[str] = []
+        unsubscribe = guild.on_quest_complete(lambda q, r: seen.append(q.id))
+
+        first = await guild.run_quest("First quest")
+        unsubscribe()
+        unsubscribe()  # idempotent
+        await guild.run_quest("Second quest")
+
+        assert seen == [first.quest_id]
+        await guild.close()
+
+    async def test_failing_handler_does_not_break_quest(self) -> None:
+        guild = _guild(MockChatModel(response_content="Done."))
+
+        def bad_handler(quest, result) -> None:  # type: ignore[no-untyped-def]
+            raise RuntimeError("subscriber exploded")
+
+        guild.on_quest_complete(bad_handler)
+        result = await guild.run_quest("Do something")
+        assert result.summary != ""
+        await guild.close()
+
+    async def test_handler_fires_for_failed_quests_too(self) -> None:
+        from guildmaster_ai.sdk.guild import Guild
+
+        # No adventurers registered → quest resolves as infeasible/failed,
+        # but subscribers are still notified.
+        guild = Guild(llm=MockChatModel())
+        seen: list[bool] = []
+        guild.on_quest_complete(lambda q, r: seen.append(r.success))
+
+        result = await guild.run_quest("Anything at all")
+        assert result.success is False
+        assert seen == [False]
+        await guild.close()
+
+    async def test_builder_with_quest_listener(self) -> None:
+        seen: list[str] = []
+        guild = (
+            GuildBuilder()
+            .with_llm_provider(MockChatModel(response_content="Done."))
+            .register_adventurer(GeneralAdventurer)
+            .with_quest_listener(lambda q, r: seen.append(q.id))
+            .build()
+        )
+        result = await guild.run_quest("Go")
+        assert seen == [result.quest_id]
+        await guild.close()

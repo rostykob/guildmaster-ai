@@ -40,6 +40,15 @@ class BaseAdventurer:
     system_prompt: str = ""
     """The system prompt sent to the LLM.  Set as a class variable or property."""
 
+    description: str = ""
+    """Short human-readable summary of what this adventurer is for.
+
+    Used by the guildmaster for quest routing (triage and subtask assignment)
+    and for talent assessment.  Set as a class variable or pass ``description``
+    to the constructor.  Optional — talents and weapons still drive matching
+    when it is empty.
+    """
+
     DEFAULT_AP: int = 20
     """Default action points — max tool calls per quest before failing."""
 
@@ -53,6 +62,7 @@ class BaseAdventurer:
         llm: GuildLLM | None = None,
         ap: int | None = None,
         hp: int | None = None,
+        description: str | None = None,
     ) -> None:
         # Check for system_prompt — allow property to be resolved after __init__
         has_prompt = isinstance(type(self).__dict__.get("system_prompt"), property) or bool(
@@ -64,6 +74,8 @@ class BaseAdventurer:
             )
         self.id = adventurer_id or str(uuid4())
         self.name = name
+        if description is not None:
+            self.description = description
         self.ap = ap if ap is not None else type(self).DEFAULT_AP
         self.hp = hp if hp is not None else type(self).DEFAULT_HP
         self._llm = llm
@@ -133,6 +145,7 @@ class BaseAdventurer:
             ",".join(sorted(self.weapon_names)),
             ",".join(sorted(a.name for a in self.armor)),
             hashlib.md5(self.system_prompt.encode()).hexdigest()[:8],
+            hashlib.md5(self.description.encode()).hexdigest()[:8],
         ]
         raw = "|".join(parts)
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
@@ -148,6 +161,7 @@ class BaseAdventurer:
         between quests.
         """
         clone = self.__class__(name=self.name, llm=self._llm, ap=self.ap, hp=self.hp)
+        clone.description = self.description
         for weapon in self._weapons.values():
             clone.equip_weapon(weapon)
         for armor_piece in self._armor:
@@ -290,6 +304,7 @@ class BaseAdventurer:
         return AdventurerProfile(
             id=self.id,
             name=self.name,
+            description=self.description,
             talents=self.talents,
             weapons=list(self._weapons.keys()),
             armor=[a.name for a in self._armor],

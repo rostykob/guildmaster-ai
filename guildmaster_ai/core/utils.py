@@ -16,6 +16,18 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def charter_block(charter: str) -> str:
+    """Format the guild charter for prompt injection (empty when absent).
+
+    The charter is owner-provided domain context. It is always appended to the
+    built-in system prompts — never substituted for them — so the JSON output
+    contracts those prompts define stay intact.
+    """
+    if not charter:
+        return ""
+    return f"\n\nGuild charter (domain context from the guild owner):\n{charter}"
+
+
 # Pattern: ```json ... ``` or ``` ... ``` (full-string match)
 _FENCE_RE = re.compile(r"^```(?:\w+)?\s*\n(.*?)```\s*$", re.DOTALL)
 # Same pattern but matches anywhere in the string (prose before/after)

@@ -17,7 +17,7 @@ from guildmaster_ai.core.messages import (
 from guildmaster_ai.core.party import Party, PartyMember
 from guildmaster_ai.core.quest import Quest, QuestRank
 from guildmaster_ai.core.quest_board import QuestBoard
-from guildmaster_ai.core.utils import parse_llm_json, safe_parse_llm_json
+from guildmaster_ai.core.utils import charter_block, parse_llm_json, safe_parse_llm_json
 from guildmaster_ai.llm.types import GuildLLM, guild_complete
 
 logger = logging.getLogger("guildmaster.guildmaster")
@@ -36,9 +36,11 @@ class Guildmaster:
     def __init__(
         self,
         llm: GuildLLM | None = None,
+        charter: str = "",
     ) -> None:
         self._roster: dict[str, BaseAdventurer] = {}
         self._llm = llm
+        self._charter = charter
 
     def register_adventurer(self, adventurer: BaseAdventurer) -> None:
         """Add an adventurer to the guild roster.
@@ -100,13 +102,14 @@ class Guildmaster:
             self._llm,
             system=(
                 "You are a guild master assessing an adventurer's talents. "
-                "Given their system prompt, weapons, and armor, return ONLY "
-                "a JSON array of talent strings. Prefer talents from this "
-                f"known list when applicable: {known}. "
+                "Given their description, system prompt, weapons, and armor, "
+                "return ONLY a JSON array of talent strings. Prefer talents "
+                f"from this known list when applicable: {known}. "
                 "You may add new talent names if none fit. "
                 "Include at least one talent."
             ),
             user=(
+                f"Description: {adventurer.description or '(none)'}\n"
                 f"System prompt: {adventurer.system_prompt}\n"
                 f"Weapons: {json.dumps(weapons_info)}\n"
                 f"Armor: {armor_info}"
@@ -163,6 +166,7 @@ class Guildmaster:
             {
                 "id": adv.id,
                 "name": adv.label,
+                "description": adv.description,
                 "hero": isinstance(adv, BaseHero),
                 "talents": adv.talents,
                 "weapons": adv.weapon_names,
@@ -195,6 +199,7 @@ class Guildmaster:
                 "return an empty list and a short infeasible_reason.\n"
                 'Respond with ONLY JSON: {"rank": "F|E|D|C|B|A|S", '
                 '"adventurers": ["<id>", ...], "infeasible_reason": null}'
+                f"{charter_block(self._charter)}"
             ),
             user=(
                 f"Title: {draft.title}\n"
@@ -299,6 +304,7 @@ class Guildmaster:
                 "Check whether the result meets ALL acceptance criteria. "
                 'Respond with ONLY a JSON object: {"accepted": true/false, '
                 '"reason": "brief explanation"}.'
+                f"{charter_block(self._charter)}"
             ),
             user=(
                 f"Quest: {quest.title}\n"
@@ -343,7 +349,12 @@ class Guildmaster:
         logger.info("Analyzing quest %s for decomposition", quest.id[:8])
 
         profiles = [
-            {"id": adv.id, "name": adv.label, "talents": adv.talents}
+            {
+                "id": adv.id,
+                "name": adv.label,
+                "description": adv.description,
+                "talents": adv.talents,
+            }
             for adv in self._roster.values()
         ]
         chronicle_text = _chronicle_block(chronicle)
@@ -369,6 +380,7 @@ class Guildmaster:
                 '"depends_on" is a list of 0-based subtask indices that must '
                 "complete before this subtask can start. Use [] for independent subtasks.\n"
                 "Respond with ONLY a JSON object."
+                f"{charter_block(self._charter)}"
             ),
             user=(
                 f"Quest: {quest.title}\n"

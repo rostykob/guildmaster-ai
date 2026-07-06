@@ -100,6 +100,15 @@ class GuildSettings(BaseSettings):
     max_quest_retries: int = 3
     # How many quests may execute concurrently in the background worker.
     max_concurrent_quests: int = 3
+    # Owner-provided domain context, appended to the guildmaster's and
+    # receptionist's system prompts (triage, planning, verification, intake).
+    # Use it to scope a guild to one domain (e.g. "an English exam tutoring
+    # guild"). Never replaces the built-in prompts.
+    guild_charter: str = ""
+    # Minimum quest rank at which the guildmaster's LLM result verification
+    # runs. "F" (default) verifies every rank; "D" skips the extra LLM call
+    # for trivial F/E quests. The guard, when enabled, always runs.
+    verify_min_rank: str = "F"
 
     # ── Librarian / memory ───────────────────────────────────────────────
     # Librarian observations (LLM analysis of finished quests) are disconnected

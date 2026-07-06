@@ -116,3 +116,15 @@ class TestBuild:
         guild = builder.build()
         assert len(guild.roster) == 1
         assert guild.info.guard_enabled is True
+
+
+class TestWithGuildCharter:
+    def test_with_guild_charter_sets_setting(self) -> None:
+        mock_llm = MockChatModel()
+        guild = (
+            GuildBuilder()
+            .with_llm_provider(mock_llm)
+            .with_guild_charter("An English exam tutoring guild.")
+            .build()
+        )
+        assert guild.settings.guild_charter == "An English exam tutoring guild."

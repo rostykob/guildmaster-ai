@@ -7,7 +7,8 @@ import json
 import pytest
 
 from guildmaster_ai.adventurers.general_adventurer import GeneralAdventurer
-from guildmaster_ai.core.quest import QuestStatus
+from guildmaster_ai.core.messages import QuestResult
+from guildmaster_ai.core.quest import Quest, QuestRank, QuestStatus
 from guildmaster_ai.sdk.builder import GuildBuilder
 from guildmaster_ai.sdk.guild import Guild
 
@@ -277,3 +278,71 @@ class TestGuildIntegration:
         assert result.success is True
         quest = guild.get_quest(result.quest_id)
         assert quest.is_composite is False
+
+
+class TestVerificationBudget:
+    """settings.verify_min_rank gates the guildmaster's LLM result verification."""
+
+    @staticmethod
+    def _in_progress_quest(rank: QuestRank) -> Quest:
+        quest = Quest(
+            title="Budget test",
+            description="A quest for verification budget testing",
+            rank=rank,
+            acceptance_criteria=["Must be checked"],
+        )
+        quest.transition(QuestStatus.POSTED, "test")
+        quest.transition(QuestStatus.ASSIGNED, "test")
+        quest.transition(QuestStatus.IN_PROGRESS, "test")
+        return quest
+
+    @pytest.mark.asyncio
+    async def test_skips_verification_below_min_rank(self) -> None:
+        # LLM would reject — but for rank E with verify_min_rank=D it is
+        # never consulted, so the result stays accepted.
+        mock_llm = MockChatModel(response_content='{"accepted": false, "reason": "no"}')
+        guild = (
+            GuildBuilder()
+            .with_llm_provider(mock_llm)
+            .with_settings(verify_min_rank="D")
+            .build()
+        )
+        quest = self._in_progress_quest(QuestRank.E)
+        result = QuestResult(sender="adv", quest_id=quest.id, success=True, summary="done")
+
+        out = await guild._verify_and_complete(quest, result)
+        assert out.success is True
+        assert mock_llm.call_count == 0
+        assert quest.status == QuestStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_verifies_at_min_rank(self) -> None:
+        mock_llm = MockChatModel(response_content='{"accepted": true, "reason": "ok"}')
+        guild = (
+            GuildBuilder()
+            .with_llm_provider(mock_llm)
+            .with_settings(verify_min_rank="D")
+            .build()
+        )
+        quest = self._in_progress_quest(QuestRank.D)
+        result = QuestResult(sender="adv", quest_id=quest.id, success=True, summary="done")
+
+        out = await guild._verify_and_complete(quest, result)
+        assert out.success is True
+        assert mock_llm.call_count == 1
+        assert quest.status == QuestStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_invalid_min_rank_verifies_everything(self) -> None:
+        mock_llm = MockChatModel(response_content='{"accepted": true, "reason": "ok"}')
+        guild = (
+            GuildBuilder()
+            .with_llm_provider(mock_llm)
+            .with_settings(verify_min_rank="banana")
+            .build()
+        )
+        quest = self._in_progress_quest(QuestRank.F)
+        result = QuestResult(sender="adv", quest_id=quest.id, success=True, summary="done")
+
+        await guild._verify_and_complete(quest, result)
+        assert mock_llm.call_count == 1

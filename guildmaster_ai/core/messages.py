@@ -34,6 +34,7 @@ class AdventurerProfile(BaseModel):
 
     id: str
     name: str
+    description: str = ""
     talents: list[str] = Field(default_factory=list)
     weapons: list[str] = Field(default_factory=list)
     armor: list[str] = Field(default_factory=list)

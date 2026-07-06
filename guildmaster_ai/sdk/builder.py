@@ -8,7 +8,7 @@ from guildmaster_ai.config.settings import GuildSettings
 from guildmaster_ai.llm.base_provider import create_chat_model
 from guildmaster_ai.llm.types import GuildLLM
 from guildmaster_ai.scrolls.catalog import ScrollCatalog
-from guildmaster_ai.sdk.guild import Guild
+from guildmaster_ai.sdk.guild import Guild, QuestCompletionHandler
 
 
 class GuildBuilder:
@@ -40,6 +40,7 @@ class GuildBuilder:
         self._settings = GuildSettings()
         self._guard: BaseGuard | bool = False
         self._scroll_catalog: ScrollCatalog | None = None
+        self._quest_listeners: list[QuestCompletionHandler] = []
 
     def _resolve_api_key(self, provider: str, api_key: str | None) -> str:
         """Return the API key for *provider*, falling back to settings."""
@@ -143,6 +144,26 @@ class GuildBuilder:
         self._scroll_catalog = ScrollCatalog(Path(path))
         return self
 
+    def with_quest_listener(self, handler: QuestCompletionHandler) -> GuildBuilder:
+        """Subscribe *handler* to quest completions on the built guild.
+
+        Equivalent to calling ``Guild.on_quest_complete(handler)`` after
+        ``build()``. The handler receives ``(quest, result)`` for every
+        finished quest (success, failure, or crash); sync or async.
+        """
+        self._quest_listeners.append(handler)
+        return self
+
+    def with_guild_charter(self, charter: str) -> GuildBuilder:
+        """Set owner-provided domain context for the guild's coordinating agents.
+
+        The charter is appended to the guildmaster's triage/planning/verification
+        prompts and the receptionist's intake prompt — it scopes a guild to a
+        domain without replacing the built-in instructions.
+        """
+        self._settings.guild_charter = charter
+        return self
+
     def with_settings(self, **kwargs: object) -> GuildBuilder:
         """Override individual settings by keyword argument."""
         for key, value in kwargs.items():
@@ -172,5 +193,8 @@ class GuildBuilder:
         if self._guard:
             custom = self._guard if isinstance(self._guard, BaseGuard) else None
             guild.enable_guard(custom)
+
+        for listener in self._quest_listeners:
+            guild.on_quest_complete(listener)
 
         return guild

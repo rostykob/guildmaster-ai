@@ -322,3 +322,37 @@ class TestLLMComplete:
         adv = SimpleAdventurer()
         with pytest.raises(RuntimeError, match="No LLM configured"):
             await adv._llm_complete("Hello")
+
+
+# ── Description ──────────────────────────────────────────────────────────
+
+
+class DescribedAdventurer(BaseAdventurer):
+    system_prompt = "You are a pirate."
+    description = "A salty pirate who answers in pirate speak."
+
+
+class TestDescription:
+    def test_default_description_empty(self) -> None:
+        adv = SimpleAdventurer()
+        assert adv.description == ""
+        assert adv.profile().description == ""
+
+    def test_class_var_description(self) -> None:
+        adv = DescribedAdventurer()
+        assert adv.description == "A salty pirate who answers in pirate speak."
+        assert adv.profile().description == adv.description
+
+    def test_constructor_overrides_class_var(self) -> None:
+        adv = DescribedAdventurer(description="A retired pirate.")
+        assert adv.description == "A retired pirate."
+
+    def test_spawn_preserves_description(self) -> None:
+        adv = SimpleAdventurer(description="Instance-level description.")
+        clone = adv.spawn()
+        assert clone.description == "Instance-level description."
+
+    def test_config_hash_includes_description(self) -> None:
+        a = SimpleAdventurer(description="one")
+        b = SimpleAdventurer(description="two")
+        assert a.config_hash != b.config_hash

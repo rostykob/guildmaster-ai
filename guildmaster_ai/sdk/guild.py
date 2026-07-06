@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import inspect
 import logging
 import math
+from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import uuid4
 
@@ -35,6 +38,9 @@ from guildmaster_ai.memory.sqlite_store import SQLiteStore
 from guildmaster_ai.scrolls.catalog import ScrollCatalog
 
 logger = logging.getLogger("guildmaster.guild")
+
+# Subscriber signature for Guild.on_quest_complete — sync or async.
+QuestCompletionHandler = Callable[[Quest, QuestResult], "Awaitable[None] | None"]
 
 
 class GuildInfo(BaseModel):
@@ -86,10 +92,11 @@ class Guild:
             vector_store=self._vector_store,
             store=self._store,
         )
-        self._guildmaster = Guildmaster(llm=llm)
+        self._guildmaster = Guildmaster(llm=llm, charter=self.settings.guild_charter)
         self._receptionist = Receptionist(
             llm=llm,
             max_rounds=self.settings.max_clarification_rounds,
+            charter=self.settings.guild_charter,
         )
         self._guard: BaseGuard | None = None
         self._talents_refined = False
@@ -118,11 +125,14 @@ class Guild:
         self._submit_stream: MemoryObjectSendStream[str] | None = None
         self._worker_task: asyncio.Task[None] | None = None
         self._completion_events: dict[str, asyncio.Event] = {}
+        self._completion_handlers: list[QuestCompletionHandler] = []
         self._prepare_lock = asyncio.Lock()
 
         # Wire the receptionist to the registries so it can answer
-        # check_status(quest_id) queries.
+        # check_status(quest_id) queries, and to the roster's weapon schemas
+        # so intake can ask for missing weapon inputs during clarification.
         self._receptionist.connect_registry(self.get_quest, self.get_result)
+        self._receptionist.connect_armoury(self._collect_weapon_schemas)
 
     def _configure_logging(self) -> None:
         """Set up the guildmaster logger based on settings."""
@@ -233,6 +243,26 @@ class Guild:
         """Return the receptionist's status report for a submitted quest."""
         return self._receptionist.check_status(quest_id)
 
+    def on_quest_complete(self, handler: QuestCompletionHandler) -> Callable[[], None]:
+        """Subscribe to quest completions (the pub-sub side of ``post_quest``).
+
+        *handler* is called as ``handler(quest, result)`` after every quest
+        finishes — success, failure, or crash. Sync and async handlers are
+        both supported. Handler exceptions are logged, never propagated, and
+        do not affect the quest result. Handlers run inline on the worker, so
+        offload heavy work (e.g. with ``asyncio.create_task``) to keep quest
+        throughput unaffected.
+
+        Returns an unsubscribe callable that removes the handler (idempotent).
+        """
+        self._completion_handlers.append(handler)
+
+        def unsubscribe() -> None:
+            with contextlib.suppress(ValueError):
+                self._completion_handlers.remove(handler)
+
+        return unsubscribe
+
     # ── Background worker ──────────────────────────────────────────────
 
     def _ensure_worker(self) -> None:
@@ -274,7 +304,20 @@ class Guild:
         event = self._completion_events.get(quest_id)
         if event is not None:
             event.set()
+        await self._notify_completion(quest, result)
         logger.info("=== Quest %s finished: success=%s ===", quest_id[:8], result.success)
+
+    async def _notify_completion(self, quest: Quest, result: QuestResult) -> None:
+        """Invoke every subscribed completion handler, containing failures."""
+        for handler in list(self._completion_handlers):
+            try:
+                out = handler(quest, result)
+                if inspect.isawaitable(out):
+                    await out
+            except Exception:
+                logger.exception(
+                    "Quest completion handler failed for %s", quest.id[:8]
+                )
 
     @staticmethod
     def _fail_quest_silently(quest: Quest) -> None:
@@ -793,7 +836,15 @@ class Guild:
         else:
             logger.debug("No guard configured — skipping verification")
 
-        accepted = await self._guildmaster.verify_result(quest, result)
+        if quest.rank < self._verify_min_rank():
+            logger.debug(
+                "Skipping result verification for rank %s quest (verify_min_rank=%s)",
+                quest.rank.name,
+                self.settings.verify_min_rank,
+            )
+            accepted = result.success
+        else:
+            accepted = await self._guildmaster.verify_result(quest, result)
         if accepted:
             quest.transition(QuestStatus.COMPLETED, "guildmaster")
             self._completed_count += 1
@@ -806,6 +857,17 @@ class Guild:
             logger.warning("Quest %s failed verification", quest.id[:8])
 
         return result
+
+    def _verify_min_rank(self) -> QuestRank:
+        """Parse ``settings.verify_min_rank``, falling back to F (verify all)."""
+        try:
+            return QuestRank[self.settings.verify_min_rank.strip().upper()]
+        except KeyError:
+            logger.warning(
+                "Invalid verify_min_rank %r — verifying all ranks",
+                self.settings.verify_min_rank,
+            )
+            return QuestRank.F
 
     # ── Quest lookup ───────────────────────────────────────────────────
 
@@ -847,6 +909,19 @@ class Guild:
     def receptionist(self) -> Receptionist:
         """The guild's receptionist — supports ``check_status(quest_id)``."""
         return self._receptionist
+
+    def _collect_weapon_schemas(self) -> list[dict[str, Any]]:
+        """Return unique weapon input schemas across the roster.
+
+        Fed to the receptionist's intake gap check so it can ask the user for
+        required weapon inputs (file paths, URLs, …) missing from a request.
+        """
+        seen: dict[str, dict[str, Any]] = {}
+        for adv in self._guildmaster.adventurers:
+            for weapon in adv.weapons.values():
+                if weapon.name not in seen:
+                    seen[weapon.name] = weapon.schema().model_dump()
+        return list(seen.values())
 
     # ── Persistent storage ────────────────────────────────────────────
 
